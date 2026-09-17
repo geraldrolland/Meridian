@@ -360,60 +360,56 @@ The E2E test validates the complete request pipeline across all services:
 
 ## Project Structure
 
-`
+```
 MERIDIAN/
-|
-+-- api_gateway_service/          # Express TypeScript API Gateway
-|   +-- src/
-|   |   +-- config/               # Centralized configuration
-|   |   +-- handlers/             # Route handlers
-|   |   +-- middleware/            # Auth, CORS, logger, error handler, rate limiting
-|   |   |   +-- ratelimit/        # Fixed window + token bucket (Lua script)
-|   |   +-- proxy/                # HTTP proxy + HMAC-SHA256 signing
-|   |   +-- types/                # TypeScript type definitions
-|   +-- tests/                    # Unit, smoke, performance tests
-|   +-- Dockerfile                # Multi-stage Node 20 Alpine build
-|   +-- package.json
-|   +-- tsconfig.json
-|
-+-- auth_service/                 # Express TypeScript Auth Service
-|   +-- src/
-|   |   +-- config/               # Config, database (pg), Redis (ioredis)
-|   |   +-- middleware/            # HMAC verification, session extraction
-|   |   +-- routes/               # Auth endpoints + readiness probe
-|   |   +-- types/                # TypeScript type definitions
-|   +-- migrations/               # SQL migration files
-|   +-- tests/                    # Unit tests
-|   +-- Dockerfile                # Multi-stage Node 20 Alpine build
-|   +-- start.sh                  # Container entrypoint (migrations + server)
-|   +-- package.json
-|   +-- tsconfig.json
-|
-+-- video_service/                # FastAPI Python Video Service
-|   +-- app/
-|   |   +-- middleware/            # Proxy signature + session verification
-|   |   +-- models/               # SQLModel: video, notification, outbox, session
-|   |   +-- routes/               # Video endpoints + health/readiness
-|   |   +-- utils/                # S3 key extraction helpers
-|   |   +-- config.py             # pydantic-settings configuration
-|   |   +-- database.py           # Async SQLAlchemy engine
-|   |   +-- consumer.py           # Kafka consumer (bucket notifications)
-|   |   +-- producer.py           # Kafka producer
-|   |   +-- minio_client.py       # MinIO presigned URLs + multipart
-|   |   +-- celery_app.py         # Celery configuration + beat schedule
-|   |   +-- tasks.py              # process_notifications, process_outbox_events
-|   |   +-- lock.py               # Redis distributed locks
-|   +-- tests/                    # pytest unit tests
-|   +-- Dockerfile                # Python 3.12-slim
-|   +-- Dockerfile.celery         # Celery worker/beat image
-|   +-- requirements.txt
-|   +-- start.sh                  # Container entrypoint (uvicorn)
-|
-+-- docker-compose.yml            # Full-stack orchestration (11 services)
-+-- e2e_test.py                   # End-to-end test script
-+-- .gitignore
-+-- README.md
-`
+├── api_gateway_service/          # Express TypeScript API Gateway
+│   ├── src/
+│   │   ├── config/               # Centralized configuration
+│   │   ├── handlers/             # Route handlers
+│   │   ├── middleware/            # Auth, CORS, logger, error handler, rate limiting
+│   │   │   └── ratelimit/        # Fixed window + token bucket (Lua script)
+│   │   ├── proxy/                # HTTP proxy + HMAC-SHA256 signing
+│   │   └── types/                # TypeScript type definitions
+│   ├── tests/                    # Unit, smoke, performance tests
+│   ├── Dockerfile                # Multi-stage Node 20 Alpine build
+│   ├── package.json
+│   └── tsconfig.json
+├── auth_service/                 # Express TypeScript Auth Service
+│   ├── src/
+│   │   ├── config/               # Config, database (pg), Redis (ioredis)
+│   │   ├── middleware/            # HMAC verification, session extraction
+│   │   ├── routes/               # Auth endpoints + readiness probe
+│   │   └── types/                # TypeScript type definitions
+│   ├── migrations/               # SQL migration files
+│   ├── tests/                    # Unit tests
+│   ├── Dockerfile                # Multi-stage Node 20 Alpine build
+│   ├── start.sh                  # Container entrypoint (migrations + server)
+│   ├── package.json
+│   └── tsconfig.json
+├── video_service/                # FastAPI Python Video Service
+│   ├── app/
+│   │   ├── middleware/            # Proxy signature + session verification
+│   │   ├── models/               # SQLModel: video, notification, outbox, session
+│   │   ├── routes/               # Video endpoints + health/readiness
+│   │   ├── utils/                # S3 key extraction helpers
+│   │   ├── config.py             # pydantic-settings configuration
+│   │   ├── database.py           # Async SQLAlchemy engine
+│   │   ├── consumer.py           # Kafka consumer (bucket notifications)
+│   │   ├── producer.py           # Kafka producer
+│   │   ├── minio_client.py       # MinIO presigned URLs + multipart
+│   │   ├── celery_app.py         # Celery configuration + beat schedule
+│   │   ├── tasks.py              # process_notifications, process_outbox_events
+│   │   └── lock.py               # Redis distributed locks
+│   ├── tests/                    # pytest unit tests
+│   ├── Dockerfile                # Python 3.12-slim
+│   ├── Dockerfile.celery         # Celery worker/beat image
+│   ├── requirements.txt
+│   └── start.sh                  # Container entrypoint (uvicorn)
+├── docker-compose.yml            # Full-stack orchestration (11 services)
+├── e2e_test.py                   # End-to-end test script
+├── .gitignore
+└── README.md
+```
 
 ---
 
