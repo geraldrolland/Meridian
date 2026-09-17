@@ -73,7 +73,7 @@ Handles identity, session management, and the JWT token lifecycle. Built with Ex
 
 **Session Architecture:**
 
-`
+```
 Client                  Gateway                 Auth Service              Redis
   |                        |                         |                      |
   |-- POST /login -------->|-- HMAC signed req ----->|                       |
@@ -85,7 +85,7 @@ Client                  Gateway                 Auth Service              Redis
   |-- GET /me (Bearer) --->|-- HMAC signed req ----->|                      |
   |                        |                         |-- GET session:UUID ->|
   |<-- 200 + user data ----|<-- 200 + user data -----|<-- {userId, email} --|
-`
+```
 
 - **Access Token**: 7-minute expiry, returned in response body
 - **Refresh Token**: 7-day expiry, set as httpOnly, Secure, SameSite=strict cookie scoped to /api/auth/refresh-token
@@ -94,14 +94,14 @@ Client                  Gateway                 Auth Service              Redis
 
 **Database Schema:**
 
-`sql
+```sql
 CREATE TABLE users (
     id            SERIAL PRIMARY KEY,
     email         VARCHAR(255) UNIQUE NOT NULL,
     hash_password VARCHAR(255) NOT NULL,
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-`
+```
 
 ---
 
@@ -120,7 +120,7 @@ Manages video upload, storage, and the async processing lifecycle. Built with Fa
 
 **Upload Flow:**
 
-`
+```
 Client                Video Service           MinIO                Kafka
   |                         |                    |                    |
   |-- POST /upload -------->|                    |                    |
@@ -144,7 +144,7 @@ Client                Video Service           MinIO                Kafka
   |                    [Celery beat: process_outbox_events]           |
   |                         |-- Publish to Kafka +------------------->|
   |                         |   (distributed lock)                    |
-`
+```
 
 **Upload Modes:**
 
@@ -157,11 +157,11 @@ Supported extensions: mp4, mov, vi, mkv, webm, lv, wmv
 
 **Video State Machine:**
 
-`
+```
 AWAITING_UPLOAD --> QUEUED --> PROCESSING --> COMPLETED
                         |           |
                         +--> FAILED (outbox retry exhaustion)
-`
+```
 
 **Transactional Outbox Pattern:**
 
