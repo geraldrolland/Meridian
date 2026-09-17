@@ -18,7 +18,8 @@ The single entry point for all client requests. Built with Express and TypeScrip
 2. **CORS** -- Configurable cross-origin resource sharing with credentials support
 3. **Request Logger** -- Structured JSON logging via Winston with request/response metadata
 4. **Cookie Parser** -- Parses incoming cookies for session extraction
-5. **JWT Auth Middleware** -- Validates Bearer tokens, looks up Redis sessions, populates eq.user
+5. **JWT Auth Middleware** -- Validates Bearer tokens, looks up Redis sessions, populates 
+eq.user
 6. **Rate Limiter** -- Per-route rate limiting with two strategies: Fixed Window and Token Bucket
 7. **Proxy Router** -- http-proxy-middleware with HMAC-SHA256 request signing
 8. **Body Parser** -- Express JSON parser (applied after proxy to preserve raw streams)
@@ -44,12 +45,12 @@ The Token Bucket implementation uses an atomic Lua script executed in Redis, han
 **Route Configuration:**
 
 Routes are defined via the ROUTES environment variable as a JSON array:
-`json
+```json
 [
   { "prefix": "/api/auth", "target": "http://auth-service:4000" },
   { "prefix": "/api/video", "target": "http://video-service:8000" }
 ]
-`
+```
 
 Each route can include per-route rate limiting overrides.
 
@@ -250,20 +251,105 @@ MERIDIAN implements defense-in-depth across five layers:
 
 ### Quick Start (Docker)
 
-`ash
-# Clone the repository
+#### Step 1: Clone the Repository
+
+```bash
 git clone https://github.com/geraldrolland/Meridian.git
 cd Meridian
+```
 
-# Start all services
+#### Step 2: Start All Services
+
+```bash
 docker compose up --build -d
+```
 
-# View logs
+This command builds all service images and starts 11 containers:
+
+| Container | Service | Purpose |
+|-----------|---------|---------|
+| meridian-api-gateway | API Gateway | Entry point, auth, rate limiting |
+| meridian-auth-service | Auth Service | User registration, login, JWT |
+| meridian-video-service | Video Service | Video upload, processing |
+| meridian-auth-db | PostgreSQL (auth) | Auth user storage |
+| meridian-video-db | PostgreSQL (video) | Video records, outbox |
+| meridian-redis | Redis | Sessions, rate limits, locks |
+| meridian-kafka | Kafka (KRaft) | Event streaming |
+| meridian-kafka-init | Kafka Init | Creates bucketnotifications topic |
+| meridian-minio | MinIO | S3-compatible object storage |
+| meridian-minio-init | MinIO Init | Creates viduploads bucket |
+| meridian-rabbitmq | RabbitMQ | Celery task broker |
+| meridian-celery-worker | Celery Worker | Processes notifications + outbox |
+| meridian-celery-beat | Celery Beat | Periodic task scheduler |
+
+#### Step 3: Verify All Services Are Running
+
+```bash
+# Check container status (all should show "Up" or "running")
+docker compose ps
+
+# Check service health
+docker compose logs api-gateway | grep -i "ready\|listening"
+docker compose logs auth-service | grep -i "ready\|listening"
+docker compose logs video-service | grep -i "ready\|listening"
+```
+
+#### Step 4: Test the API Gateway
+
+```bash
+# Health check
+curl http://localhost:3001/health
+
+# Should return: {"status":"ok"}
+```
+
+#### Step 5: Run the End-to-End Test
+
+```bash
+# Install Python dependencies (if not already installed)
+pip install requests psycopg2-binary
+
+# Run the full E2E test suite
+python e2e_test.py
+```
+
+The E2E test validates the complete pipeline: register, login, token refresh, profile, video upload, MinIO notification, video status, and logout.
+
+#### Step 6: View Logs
+
+```bash
+# Follow all logs
 docker compose logs -f
 
-# Stop all services
+# Follow specific service logs
+docker compose logs -f api-gateway
+docker compose logs -f auth-service
+docker compose logs -f video-service
+docker compose logs -f celery-worker
+
+# View last 100 lines of a service
+docker compose logs --tail 100 api-gateway
+```
+
+#### Step 7: Access Service Consoles
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
+| RabbitMQ Management | http://localhost:15672 | guest / guest |
+
+#### Step 8: Stop Services
+
+```bash
+# Stop all services (preserves volumes)
 docker compose down
-`
+
+# Stop all services and remove volumes (fresh start)
+docker compose down -v
+
+# Stop and remove images
+docker compose down --rmi all
+```
 
 **Service URLs after startup:**
 
@@ -281,30 +367,30 @@ docker compose down
 Each service can be developed independently. Prerequisites and full setup instructions are in each service's README.
 
 **API Gateway:**
-`ash
+```bash
 cd api_gateway_service
 cp .env.example .env  # configure environment
 npm install
 npm run dev
-`
+```
 
 **Auth Service:**
-`ash
+```bash
 cd auth_service
 cp .env.example .env  # configure environment
 npm install
 npm run dev
-`
+```
 
 **Video Service:**
-`ash
+```bash
 cd video_service
 cp .env.example .env  # configure environment
 python -m venv .venv
 .venv\Scripts\activate  # Windows
 pip install -r requirements.txt
 uvicorn app.main:app --reload
-`
+```
 
 ---
 
@@ -312,7 +398,7 @@ uvicorn app.main:app --reload
 
 ### Unit and Integration Tests
 
-`ash
+```bash
 # API Gateway (Jest + TypeScript)
 cd api_gateway_service
 npm test
@@ -324,22 +410,22 @@ npm test
 # Video Service (pytest + Python)
 cd video_service
 pytest
-`
+```
 
 ### Load and Performance Testing
 
-`ash
+```bash
 # API Gateway load tests (autocannon)
 cd api_gateway_service
 npm run test:performance
-`
+```
 
 ### End-to-End Testing
 
-`ash
+```bash
 # Full pipeline validation (requires all services running via Docker Compose)
 python e2e_test.py
-`
+```
 
 The E2E test validates the complete request pipeline across all services:
 
