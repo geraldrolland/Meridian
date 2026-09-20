@@ -29,5 +29,6 @@ class Outbox(SQLModel, table=True):
     )
     payload: dict = Field(sa_column=Column(JSON, nullable=False))
     status: str = Field(default=OutboxStatus.PENDING.value, max_length=32)
+    video_id: str = Field(max_length=36, foreign_key="videos.id")
     retry_count: int = Field(default=0)
     retry_after: datetime | None = Field(default=None, nullable=True)

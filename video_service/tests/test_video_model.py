@@ -15,7 +15,7 @@ class TestVideoStatusEnum:
         assert VideoStatus.QUEUED.value == "QUEUED"
 
     def test_all_statuses(self):
-        expected = {"AWAITING_UPLOAD", "QUEUED", "PROCESSING", "COMPLETED", "FAILED"}
+        expected = {"AWAITING_UPLOAD", "QUEUED", "PROCESSING", "GENERATING_MANIFEST", "COMPLETED", "FAILED", "DLQ_PENDING"}
         actual = {s.value for s in VideoStatus}
         assert actual == expected
 
@@ -48,6 +48,14 @@ class TestVideoModel:
     def test_total_parts_defaults_to_none(self):
         video = Video(filename="test.mp4")
         assert video.total_parts is None
+
+    def test_num_of_retries_defaults_to_zero(self):
+        video = Video(filename="test.mp4")
+        assert video.num_of_retries == 0
+
+    def test_num_of_retries_can_be_set(self):
+        video = Video(filename="test.mp4", num_of_retries=3)
+        assert video.num_of_retries == 3
 
 
 class TestUploadRequestModel:

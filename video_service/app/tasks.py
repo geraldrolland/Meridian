@@ -1,11 +1,9 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
-from kafka.errors import NoBrokersAvailable
-
 from app.celery_app import celery_app
 from app.database_sync import get_sync_session
-from app.lock import acquire_lock, release_lock
+from app.lock import LockState, acquire_lock, release_lock
 from app.models.notification import BucketNotificationEvent, NotificationStatus
 from app.models.outbox import Outbox, OutboxStatus
 from app.models.video import Video, VideoStatus
@@ -33,19 +31,21 @@ def process_notifications():
     """Process PENDING notification records in batches.
 
     For each notification:
-    1. Acquire Redis lock (2 min TTL)
-    2. Extract video_id from event
-    3. Fetch Video record, set object_url + status=PROCESSING
-    4. Set notification status=RECEIVED
-    5. Create Outbox entry
-    6. Commit atomically
-    7. Release lock
+    1. Acquire PROCESS lock
+    2. Extract video_id, update video status + notification status
+    3. Create Outbox entry
+    4. Acquire COMMIT lock, commit, release COMMIT lock
+    5. Release PROCESS lock
     """
     session = get_sync_session()
     try:
+        now = datetime.now(timezone.utc)
         pending = (
             session.query(BucketNotificationEvent)
-            .filter(BucketNotificationEvent.status == NotificationStatus.PENDING.value)
+            .filter(
+                BucketNotificationEvent.status == NotificationStatus.PENDING.value,
+                (BucketNotificationEvent.retry_after.is_(None)) | (BucketNotificationEvent.retry_after < now),
+            )
             .limit(BATCH_SIZE)
             .all()
         )
@@ -56,11 +56,12 @@ def process_notifications():
         processed = 0
 
         for notification in pending:
-            lock = acquire_lock(notification.id)
-            if lock is None:
+            process_lock = acquire_lock(LockState.PROCESS, notification.id)
+            if process_lock is None:
                 logger.debug("Lock held for notification %s, skipping", notification.id)
                 continue
 
+            commit_lock = None
             try:
                 notif = session.get(BucketNotificationEvent, notification.id)
                 if notif is None or notif.status != NotificationStatus.PENDING.value:
@@ -97,15 +98,16 @@ def process_notifications():
 
                 outbox = Outbox(
                     topic="video.queued",
+                    video_id=video_id,
                     payload={
-                        "event_id": uuid.uuid4().hex,
                         "origin_service": "video-service",
-                        "video_id": video_id, 
-                        "object_url": object_url
-                        }
+                        "video_id": video_id,
+                        "object_url": object_url,
+                    },
                 )
                 session.add(outbox)
 
+                commit_lock = acquire_lock(LockState.COMMIT, notification.id)
                 session.commit()
                 processed += 1
 
@@ -121,7 +123,16 @@ def process_notifications():
                 try:
                     notif = session.get(BucketNotificationEvent, notification.id)
                     if notif:
-                        notif.status = NotificationStatus.FAILED.value
+                        if notif.num_of_retry >= 5:
+                            notif.num_of_retry = 5
+                            notif.retry_after = None
+                            notif.status = NotificationStatus.FAILED.value
+                            video = session.get(Video, notif.video_id)
+                            if video:
+                                video.status = VideoStatus.FAILED.value
+                        else:
+                            notif.num_of_retry += 1
+                            notif.retry_after = datetime.now(timezone.utc) + timedelta(minutes=2)
                         session.commit()
                 except Exception:
                     session.rollback()
@@ -129,7 +140,9 @@ def process_notifications():
                     "Error processing notification %s", notification.id
                 )
             finally:
-                release_lock(lock)
+                if commit_lock:
+                    release_lock(commit_lock)
+                release_lock(process_lock)
 
         return {"processed": processed, "total_pending": len(pending)}
 
@@ -152,16 +165,12 @@ def process_outbox_events():
     """Process PENDING outbox events in batches of 100.
 
     For each event:
-    1. Acquire Redis lock (2 min TTL)
+    1. Acquire PROCESS lock
     2. Publish to Kafka
-    3. If success → set status=PROCESSED
-    4. If NoBrokersAvailable → skip, event stays PENDING for next beat cycle
-    5. If other error → increment retry_count
-       - If retry_count >= 5 → status=FAILED, set video.status=FAILED
-       - Else → set retry_after=now+2min
-    6. Commit atomically
-    7. Release lock
+    3. Acquire COMMIT lock, commit, release COMMIT lock
+    4. Release PROCESS lock
     """
+    kafka_producer.initialize()
     session = get_sync_session()
     try:
         now = datetime.now(timezone.utc)
@@ -181,28 +190,24 @@ def process_outbox_events():
         processed = 0
 
         for event in pending:
-            lock = acquire_lock(event.id, prefix="outbox")
-            if lock is None:
+            process_lock = acquire_lock(LockState.PROCESS, event.id)
+            if process_lock is None:
                 continue
 
+            commit_lock = None
             try:
                 outbox = session.get(Outbox, event.id)
                 if outbox is None or outbox.status != OutboxStatus.PENDING.value:
                     continue
 
-                # Publish to Kafka synchronously
                 kafka_producer.publish(outbox.topic, outbox.payload)
 
                 outbox.status = OutboxStatus.PROCESSED.value
+
+                commit_lock = acquire_lock(LockState.COMMIT, event.id)
                 session.commit()
                 processed += 1
                 logger.info("Processed outbox event %s", outbox.id)
-
-            except NoBrokersAvailable:
-                logger.warning(
-                    "Kafka broker unavailable, skipping outbox event %s", event.id
-                )
-                raise  # Let Celery retry the task later
 
             except Exception:
                 session.rollback()
@@ -228,7 +233,9 @@ def process_outbox_events():
                     logger.exception("Error processing outbox event %s", event.id)
                     raise
             finally:
-                release_lock(lock)
+                if commit_lock:
+                    release_lock(commit_lock)
+                release_lock(process_lock)
 
         return {"processed": processed, "total_pending": len(pending)}
 
@@ -248,15 +255,14 @@ def process_outbox_events():
     default_retry_delay=60,
 )
 def process_failed_videos():
-    """Query DLQ_PENDING videos and publish to video.DLQ topic.
+    """Query DLQ_PENDING videos and create outbox events for video.DLQ topic.
 
     For each video:
-    1. Acquire Redis lock (2 min TTL)
-    2. Re-fetch video, confirm DLQ_PENDING
-    3. Publish DLQ message to video.DLQ topic
-    4. Set status=FAILED
-    5. Commit atomically
-    6. Release lock
+    1. Acquire PROCESS lock
+    2. Create Outbox entry for video.DLQ topic
+    3. Set status=FAILED
+    4. Acquire COMMIT lock, commit, release COMMIT lock
+    5. Release PROCESS lock
     """
     session = get_sync_session()
     try:
@@ -273,35 +279,38 @@ def process_failed_videos():
         processed = 0
 
         for video in videos:
-            lock = acquire_lock(video.id, prefix="dlq")
-            if lock is None:
+            process_lock = acquire_lock(LockState.PROCESS, video.id)
+            if process_lock is None:
                 continue
 
+            commit_lock = None
             try:
                 v = session.get(Video, video.id)
                 if v is None or v.status != VideoStatus.DLQ_PENDING.value:
                     continue
 
                 dlq_payload = {
+                    "origin_service": "video-service",
                     "video_id": v.id,
                     "user_id": v.user_id,
                     "filename": v.filename,
                     "reason": "processing_failed",
                 }
 
-                kafka_producer.publish("video.DLQ", dlq_payload)
+                outbox = Outbox(
+                    topic="video.DLQ",
+                    video_id=v.id,
+                    payload=dlq_payload,
+                )
+                session.add(outbox)
 
                 v.status = VideoStatus.FAILED.value
+
+                commit_lock = acquire_lock(LockState.COMMIT, video.id)
                 session.commit()
                 processed += 1
 
-                logger.info("Published video %s to DLQ", v.id)
-
-            except NoBrokersAvailable:
-                logger.warning(
-                    "Kafka broker unavailable, skipping video %s", video.id
-                )
-                raise
+                logger.info("Created DLQ outbox event for video %s", v.id)
 
             except Exception:
                 session.rollback()
@@ -310,7 +319,9 @@ def process_failed_videos():
                 )
                 raise
             finally:
-                release_lock(lock)
+                if commit_lock:
+                    release_lock(commit_lock)
+                release_lock(process_lock)
 
         return {"processed": processed, "total_pending": len(videos)}
 

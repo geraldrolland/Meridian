@@ -10,8 +10,11 @@ The Video Service is the media backbone of MERIDIAN. It runs behind the API Gate
 - Presigned POST upload URL generation with Content-Type enforcement
 - Server-side multipart upload initiation for large files (>100 MB)
 - MinIO bucket notification consumption via Kafka
-- Video status lifecycle management (awaiting upload → queued → processing → completed/failed)
+- Video status lifecycle management (awaiting upload → queued → processing → generating manifest → completed/failed/DLQ_PENDING)
 - Outbox pattern for reliable downstream event dispatch
+- 6 Kafka consumers: notification, retry, processing, failure, manifest_generating, manifest_completed
+- Distributed Redis locks with nested lock pattern (PROCESS + COMMIT)
+- Retry logic with configurable backoff (max 5 retries)
 
 ## Architecture
 
@@ -234,11 +237,12 @@ Discards all uploaded parts and marks the video as failed.
 | `MINIO_ENDPOINT` | MinIO endpoint | `minio:9000` |
 | `MINIO_ACCESS_KEY` | MinIO access key | `minioadmin` |
 | `MINIO_SECRET_KEY` | MinIO secret key | `minioadmin` |
-| `MINIO_BUCKET` | Upload bucket name | `vid_uploads` |
+| `MINIO_BUCKET` | Upload bucket name | `viduploads` |
 | `MINIO_SECURE` | Use HTTPS for MinIO | `false` |
 | `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker addresses | `kafka:29092` |
 | `KAFKA_TOPIC` | Bucket notification topic | `bucketnotifications` |
 | `KAFKA_CONSUMER_GROUP_ID` | Consumer group ID | `meridian-video-consumer-group` |
+| `KAFKA_AUTO_OFFSET_RESET` | Offset reset policy | `earliest` |
 | `CELERY_BROKER_URL` | RabbitMQ broker URL | `amqp://guest:guest@rabbitmq:5672//` |
 | `CELERY_RESULT_BACKEND` | Redis result backend | `redis://redis:6379/1` |
 | `REDIS_HOST` | Redis host | `redis` |
@@ -249,26 +253,50 @@ Discards all uploaded parts and marks the video as failed.
 | `DEFAULT_PART_SIZE` | Part size (bytes) for multipart uploads | `5242880` (5 MB) |
 | `LOG_LEVEL` | Python logging level | `info` |
 
+## Kafka Consumers
+
+The video service runs 6 Kafka consumers on startup, each handling a specific event type:
+
+| Consumer | Topic | Action |
+|----------|-------|--------|
+| `notification_consumer` | `bucketnotifications` | Stores event, sets video to QUEUED, creates outbox |
+| `retry_consumer` | `video.retry` | Resets video to QUEUED, creates outbox |
+| `processing_consumer` | `video.processing` | Sets video status to PROCESSING |
+| `failure_consumer` | `job.failed` / `manifest.failed` | Sets video to FAILED or DLQ_PENDING |
+| `manifest_generating_consumer` | `manifest.generating` | Sets video to GENERATING_MANIFEST |
+| `manifest_completed_consumer` | `manifest.completed` | Sets video status to COMPLETED |
+
 ## Project Structure
 
 ```
 video_service/
 ├── app/
 │   ├── config.py              # Centralized settings (pydantic-settings)
-│   ├── consumer.py            # Kafka consumer for bucket notifications
+│   ├── consumers/
+│   │   ├── __init__.py        # Re-exports all consumers
+│   │   ├── base.py            # AppRebalanceListener
+│   │   ├── notification_consumer.py   # bucketnotifications → QUEUED + Outbox
+│   │   ├── retry_consumer.py          # video.retry → QUEUED + Outbox
+│   │   ├── processing_consumer.py     # video.processing → PROCESSING
+│   │   ├── failure_consumer.py        # job.failed/manifest.failed → FAILED/DLQ_PENDING
+│   │   ├── manifest_generating_consumer.py  # manifest.generating → GENERATING_MANIFEST
+│   │   └── manifest_completed_consumer.py   # manifest.completed → COMPLETED
 │   ├── database.py            # Async SQLAlchemy engine + session factory
 │   ├── main.py                # FastAPI app bootstrap + startup/shutdown
 │   ├── minio_client.py        # MinIO presigned URL + multipart helpers
-│   ├── tasks.py               # Celery tasks (process_notifications, outbox)
+│   ├── producer.py            # KafkaProducer with auto event_id/timestamp
+│   ├── tasks.py               # Celery tasks (process_notifications, outbox, failed_videos)
+│   ├── celery_app.py          # Celery config with video queue routing
+│   ├── lock.py                # Redis distributed locks (PROCESS + COMMIT nested pattern)
 │   ├── middleware/
 │   │   ├── check_proxy_signature.py  # HMAC gateway signature verification
 │   │   └── get_user_session.py       # Session cookie extraction
 │   ├── models/
 │   │   ├── events.py          # MinIO event Pydantic models
-│   │   ├── notification.py    # BucketNotificationEvent SQLModel
-│   │   ├── outbox.py          # Outbox event SQLModel
+│   │   ├── notification.py    # BucketNotificationEvent SQLModel (with video_id FK)
+│   │   ├── outbox.py          # Outbox event SQLModel (with video_id FK)
 │   │   ├── session.py         # SessionData Pydantic model
-│   │   └── video.py           # Video SQLModel + upload request/response models
+│   │   └── video.py           # Video SQLModel + VideoStatus enum (7 states)
 │   ├── routes/
 │   │   ├── video.py           # Upload, complete, abort endpoints
 │   │   └── ready.py           # Database readiness probe
@@ -307,11 +335,13 @@ python -m pytest tests/test_upload_endpoint.py -v
 | Middleware (proxy signature + session) | 7 tests |
 | MinIO client (presigned POST) | 2 tests |
 | Multipart upload functions | 4 tests |
-| Process notifications task | 3 tests |
+| Process notifications task | 9 tests |
 | Ready endpoint | 6 tests |
 | Upload endpoint | 8 tests |
-| Video/Upload models | 13 tests |
-| **Total** | **43 tests** |
+| Video/Upload models | 14 tests |
+| Lock system | 6 tests |
+| Producer | 4 tests |
+| **Total** | **60 tests** |
 
 ## Docker
 

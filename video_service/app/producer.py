@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 
 from kafka import KafkaProducer as SyncKafkaProducer
 from kafka.errors import NoBrokersAvailable
@@ -44,7 +45,8 @@ class KafkaProducer:
         """Publish a message to Kafka synchronously. Raises NoBrokersAvailable if broker is offline."""
         if self._producer is None:
             raise RuntimeError("Kafka producer not initialized")
-        payload.update({"timestamp": datetime.now(timezone.utc).timestamp()})  # Add timestamp to payload
+        payload["event_id"] = uuid.uuid4().hex
+        payload["timestamp"] = datetime.now(timezone.utc).timestamp()
         self._producer.send(topic, payload)
         self._producer.flush()
         logger.info("Published event to topic=%s", topic)

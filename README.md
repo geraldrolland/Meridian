@@ -135,7 +135,7 @@ CREATE TABLE users (
 
 ### Video Service (Port 8000)
 
-Manages video upload, storage, and the async processing lifecycle. Built with FastAPI (async Python), backed by PostgreSQL, MinIO, Kafka, and Celery.
+Manages video upload, storage, and the async processing lifecycle. Built with FastAPI (async Python), backed by PostgreSQL, MinIO, Kafka, and Celery. Runs 6 Kafka consumers for event-driven state transitions.
 
 **API Endpoints:**
 
@@ -186,9 +186,10 @@ Supported extensions: `mp4`, `mov`, `avi`, `mkv`, `webm`, `flv`, `wmv`
 **Video State Machine:**
 
 ```
-AWAITING_UPLOAD --> QUEUED --> PROCESSING --> COMPLETED
-                        |           |
-                        +--> FAILED (outbox retry exhaustion)
+AWAITING_UPLOAD --> QUEUED --> PROCESSING --> GENERATING_MANIFEST --> COMPLETED
+                        |           |              |
+                        |           +--> FAILED <--+
+                        +--> DLQ_PENDING (dead-letter queue)
 ```
 
 **Transactional Outbox Pattern:**
@@ -437,10 +438,14 @@ Re-enters processing pipeline
 |-------|------------|-----------|-----------|---------|
 | `bucketnotifications` | 4 | MinIO | Video Service | MinIO bucket PUT event notifications |
 | `video.queued` | 8 | Video Service | Media Processing Service | Video ready for processing |
+| `video.processing` | 4 | Media Processing Service | Video Service | Video processing started |
+| `video.retry` | 4 | Dashboard Service | Video Service | Retry events from dashboard |
 | `video.DLQ` | 4 | Media Processing Service | Dashboard Service | Dead-letter queue for failed events |
-| `video.retry` | 4 | Dashboard Service | Media Processing Service | Retry events from dashboard |
-| `job.completed` | 4 | Media Processing Service | Downstream consumers | Job finished processing successfully |
-| `job.failed` | 4 | Media Processing Service | Downstream consumers | Job failed after processing attempts |
+| `job.completed` | 4 | Media Processing Service | Video Service | Job finished processing successfully |
+| `job.failed` | 4 | Media Processing Service | Video Service | Job failed after processing attempts |
+| `manifest.generating` | 4 | Media Processing Service | Video Service | Manifest generation started |
+| `manifest.completed` | 4 | Media Processing Service | Video Service | Manifest generation completed |
+| `manifest.failed` | 4 | Media Processing Service | Video Service | Manifest generation failed |
 
 ---
 
@@ -513,13 +518,15 @@ cd Meridian
 docker compose up --build -d
 ```
 
-This command builds all service images and starts **20 containers**:
+This command builds all service images and starts **22 containers**:
 
 | Container | Service | Purpose |
 |-----------|---------|---------|
 | meridian-api-gateway | API Gateway | Entry point, auth, rate limiting, WebSocket proxy |
 | meridian-auth-service | Auth Service | User registration, login, JWT |
 | meridian-video-service | Video Service | Video upload, processing lifecycle |
+| meridian-video-celery-worker | Video Celery Worker | Processes notifications + outbox + failed videos |
+| meridian-video-celery-beat | Video Celery Beat | Periodic task scheduler (notifications + outbox) |
 | meridian-media-processing-service | Media Processing Service | FFmpeg pipeline, transcoding, segmentation |
 | meridian-media-processing-celery-worker | Media Processing Celery Worker | 7 periodic processing tasks |
 | meridian-media-processing-celery-beat | Media Processing Celery Beat | Periodic task scheduler |
@@ -534,7 +541,7 @@ This command builds all service images and starts **20 containers**:
 | meridian-minio | MinIO | S3-compatible object storage |
 | meridian-minio-init | MinIO Init | Creates viduploads bucket + notification config |
 | meridian-rabbitmq | RabbitMQ | Celery task broker |
-| meridian-celery-worker | Celery Worker (video) | Processes notifications + outbox |
+| meridian-celery-worker | Celery Worker (video) | Processes notifications + outbox + failed videos |
 | meridian-celery-beat | Celery Beat (video) | Periodic task scheduler (notifications + outbox) |
 
 #### Step 3: Verify All Services Are Running
@@ -582,9 +589,11 @@ docker compose logs -f
 docker compose logs -f api-gateway
 docker compose logs -f auth-service
 docker compose logs -f video-service
+docker compose logs -f video-celery-worker
 docker compose logs -f media-processing-service
 docker compose logs -f dashboard-service
 docker compose logs -f celery-worker
+docker compose logs -f media-processing-celery-worker
 
 # View last 100 lines of a service
 docker compose logs --tail 100 api-gateway
@@ -746,11 +755,13 @@ python -m pytest tests/ -v
 | Middleware (proxy signature + session) | 7 tests |
 | MinIO client (presigned POST) | 2 tests |
 | Multipart upload functions | 4 tests |
-| Process notifications task | 3 tests |
+| Process notifications task | 9 tests |
 | Ready endpoint | 6 tests |
 | Upload endpoint | 8 tests |
-| Video/Upload models | 13 tests |
-| **Total** | **43 tests** |
+| Video/Upload models | 14 tests |
+| Lock system | 6 tests |
+| Producer | 4 tests |
+| **Total** | **60 tests** |
 
 ### Load and Performance Testing
 
@@ -782,7 +793,15 @@ The E2E test validates the complete request pipeline across all services:
 9. Bucket notification processing (Kafka)
 10. Video status polling (state machine)
 11. Outbox event processing
-12. User logout (session invalidation)
+12. Job creation in media-processing-db
+13. Transcode tasks + segments on disk
+14. Upload tasks created and completed
+15. Objects in vidsegments bucket (MinIO)
+16. Job status = COMPLETED
+17. Outbox job.completed event published
+18. Segment cleanup verification
+19. Failure flow: seed FAILED job, process_failed_jobs, job.failed event, object cleanup, video status=FAILED
+20. User logout (session invalidation)
 
 ---
 
@@ -848,20 +867,28 @@ MERIDIAN/
 │   │   ├── config.py                 # pydantic-settings configuration
 │   │   ├── database.py               # Async SQLAlchemy engine
 │   │   ├── database_sync.py          # Sync engine for Celery tasks
-│   │   ├── consumer.py               # Kafka consumer (bucket notifications)
-│   │   ├── producer.py               # Kafka producer
+│   │   ├── consumers/
+│   │   │   ├── __init__.py           # Re-exports all consumers
+│   │   │   ├── base.py               # AppRebalanceListener
+│   │   │   ├── notification_consumer.py    # bucketnotifications → QUEUED
+│   │   │   ├── retry_consumer.py           # video.retry → QUEUED
+│   │   │   ├── processing_consumer.py      # video.processing → PROCESSING
+│   │   │   ├── failure_consumer.py         # job.failed/manifest.failed → FAILED
+│   │   │   ├── manifest_generating_consumer.py  # manifest.generating
+│   │   │   └── manifest_completed_consumer.py   # manifest.completed → COMPLETED
+│   │   ├── producer.py               # KafkaProducer (auto event_id/timestamp)
 │   │   ├── minio_client.py           # MinIO presigned URLs + multipart
-│   │   ├── celery_app.py             # Celery configuration + beat schedule
-│   │   ├── tasks.py                  # process_notifications, process_outbox_events
-│   │   ├── lock.py                   # Redis distributed locks
+│   │   ├── celery_app.py             # Celery configuration (video queue routing)
+│   │   ├── tasks.py                  # process_notifications, outbox, failed_videos
+│   │   ├── lock.py                   # Redis distributed locks (PROCESS + COMMIT)
 │   │   ├── main.py                   # FastAPI app bootstrap + startup/shutdown
 │   │   ├── middleware/               # Proxy signature + session verification
 │   │   │   ├── check_proxy_signature.py
 │   │   │   └── get_user_session.py
 │   │   ├── models/                   # SQLModel: video, notification, outbox, session
-│   │   │   ├── video.py
-│   │   │   ├── notification.py
-│   │   │   ├── outbox.py
+│   │   │   ├── video.py              # VideoStatus: 7 states (incl. GENERATING_MANIFEST)
+│   │   │   ├── notification.py       # BucketNotificationEvent (FK video_id)
+│   │   │   ├── outbox.py             # Outbox (FK video_id)
 │   │   │   ├── events.py
 │   │   │   └── session.py
 │   │   ├── routes/                   # Video endpoints + health/readiness
@@ -869,7 +896,7 @@ MERIDIAN/
 │   │   │   └── ready.py
 │   │   └── utils/                    # S3 key extraction helpers
 │   │       └── notification_utils.py
-│   ├── tests/                        # pytest unit tests
+│   ├── tests/                        # pytest unit tests (60 tests)
 │   ├── Dockerfile                    # Python 3.12-slim
 │   ├── Dockerfile.celery             # Celery worker/beat image
 │   ├── requirements.txt
@@ -946,7 +973,7 @@ MERIDIAN/
 | Pattern | Implementation | Benefit |
 |---------|---------------|---------|
 | **Transactional Outbox** | Outbox table in video_db and media_processing_db with Celery beat publisher | Reliable event delivery even during Kafka outages |
-| **Distributed Locking** | Redis locks with TTL via `lock.py` (dual-lock: PROCESSING + COMMITTING) | Prevents duplicate task processing across workers |
+| **Distributed Locking** | Redis locks with TTL via `lock.py` (dual-lock: PROCESSING + COMMITTING, nested pattern) | Prevents duplicate task processing across workers |
 | **Dead-Letter Queue** | `video.DLQ` topic consumes failed events; dashboard stores + offers retry | Failed events are not lost; operators can inspect and retry |
 | **Token Bucket** | Atomic Redis Lua script in API Gateway | Burst-tolerant rate limiting without race conditions |
 | **Singleton** | Singleton pattern for MinIO client and Kafka producer in media_processing_service | Ensures single instance across Celery worker processes |

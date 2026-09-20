@@ -1,10 +1,17 @@
 import logging
+from enum import Enum
 
 import redis
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class LockState(str, Enum):
+    PROCESS = "PROCESS"
+    COMMIT = "COMMIT"
+
 
 redis_client = redis.Redis(
     host=settings.redis_host,
@@ -17,13 +24,13 @@ LOCK_TTL = 120  # 2 minutes
 LOCK_BLOCKING_TIMEOUT = 5  # seconds
 
 
-def acquire_lock(entity_id: str, prefix: str = "notification") -> redis.lock.Lock | None:
+def acquire_lock(state: LockState, id: str) -> redis.lock.Lock | None:
     """Acquire a distributed lock for an entity.
 
     Returns the lock object if acquired, None if already locked by another worker.
     """
     lock = redis_client.lock(
-        name=f"{prefix}:{entity_id}",
+        name=f"{state.value}:{id}",
         timeout=LOCK_TTL,
         blocking_timeout=LOCK_BLOCKING_TIMEOUT,
     )

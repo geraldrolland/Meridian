@@ -12,6 +12,7 @@ class VideoStatus(str, Enum):
     AWAITING_UPLOAD = "AWAITING_UPLOAD"
     QUEUED = "QUEUED"
     PROCESSING = "PROCESSING"
+    GENERATING_MANIFEST = "GENERATING_MANIFEST"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     DLQ_PENDING = "DLQ_PENDING"
@@ -92,6 +93,7 @@ class Video(SQLModel, table=True):
     video_url: str | None = Field(default=None, max_length=2048, exclude=True)
     multipart_upload_id: str | None = Field(default=None, max_length=256, nullable=True)
     total_parts: int | None = Field(default=None, nullable=True)
+    num_of_retries: int = Field(default=0)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
         nullable=False,

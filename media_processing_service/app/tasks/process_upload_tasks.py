@@ -87,7 +87,7 @@ def process_upload_tasks():
 
                 with ThreadPoolExecutor(max_workers=min(len(files_to_upload), 3)) as pool:
                     futures = {
-                        pool.submit(upload_object, fp, ok): (fp, ok)
+                        pool.submit(upload_object, fp, ok, settings.minio_segment_bucket): (fp, ok)
                         for fp, ok in zip(files_to_upload, object_keys)
                     }
                     for future in as_completed(futures):

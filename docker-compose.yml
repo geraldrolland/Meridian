@@ -140,10 +140,18 @@ services:
       echo 'Topic video.DLQ created with 4 partitions' &&
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic video.retry --partitions 4 --replication-factor 1 &&
       echo 'Topic video.retry created with 4 partitions' &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic video.processing --partitions 4 --replication-factor 1 &&
+      echo 'Topic video.processing created with 4 partitions' &&
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic job.completed --partitions 4 --replication-factor 1 &&
       echo 'Topic job.completed created with 4 partitions' &&
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic job.failed --partitions 4 --replication-factor 1 &&
-      echo 'Topic job.failed created with 4 partitions'
+      echo 'Topic job.failed created with 4 partitions' &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic manifest.failed --partitions 4 --replication-factor 1 &&
+      echo 'Topic manifest.failed created with 4 partitions' &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic manifest.generating --partitions 4 --replication-factor 1 &&
+      echo 'Topic manifest.generating created with 4 partitions' &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic manifest.completed --partitions 4 --replication-factor 1 &&
+      echo 'Topic manifest.completed created with 4 partitions'
       "
 
   minio:
@@ -256,17 +264,18 @@ services:
       - meridian
     restart: unless-stopped
 
-  celery-worker:
+  video-celery-worker:
     build:
       context: ./video_service
       dockerfile: Dockerfile.celery
-    container_name: meridian-celery-worker
+    container_name: meridian-video-celery-worker
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@video-db:5432/video_db
       - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+    command: celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo -Q video
     depends_on:
       video-db:
         condition: service_healthy
@@ -278,11 +287,11 @@ services:
       - meridian
     restart: unless-stopped
 
-  celery-beat:
+  video-celery-beat:
     build:
       context: ./video_service
       dockerfile: Dockerfile.celery
-    container_name: meridian-celery-beat
+    container_name: meridian-video-celery-beat
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@video-db:5432/video_db
       - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
@@ -362,6 +371,7 @@ services:
       - MINIO_UPLOAD_BUCKET=vidsegments
       - MINIO_SECURE=false
       - LOG_LEVEL=info
+    command: celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo -Q media_processing
     depends_on:
       media-processing-db:
         condition: service_healthy

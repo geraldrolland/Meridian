@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     minio_endpoint: str = "minio:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
-    minio_upload_bucket: str = "viduploads"
+    minio_download_bucket: str = "viduploads"
     minio_segment_bucket: str = "vidsegments"
     minio_thumbnail_bucket: str = "vidthumbnails"
     minio_secure: bool = False

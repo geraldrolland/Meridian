@@ -89,7 +89,7 @@ def process_queued_jobs():
                 save_path = os.path.join(download_dir, f"{job.video_id}{ext}")
 
                 if not os.path.exists(save_path):
-                    download_object(job.object_url, save_path, settings.minio_upload_bucket)
+                    download_object(job.object_url, save_path, settings.minio_download_bucket)
                 else:
                     logger.info(
                         "Video %s already downloaded at %s",

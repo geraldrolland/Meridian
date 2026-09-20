@@ -226,7 +226,9 @@ All settings are loaded from environment variables via `pydantic-settings`. Copy
 | `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint |
 | `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `minioadmin` | MinIO secret key |
-| `MINIO_SEGMENT_BUCKET` | `vidsegments` | Bucket for transcoded segments |
+| `MINIO_DOWNLOAD_BUCKET` | `viduploads` | Bucket to download original videos from |
+| `MINIO_UPLOAD_BUCKET` | `vidsegments` | Bucket for transcoded segments |
+| `MINIO_SEGMENT_BUCKET` | `vidsegments` | Bucket for segment operations |
 | `MINIO_THUMBNAIL_BUCKET` | `vidthumbnails` | Bucket for thumbnails |
 | `CELERY_BROKER_URL` | `amqp://guest:guest@rabbitmq:5672//` | RabbitMQ broker |
 | `CELERY_RESULT_BACKEND` | `redis://redis:6379/1` | Redis for Celery results |
