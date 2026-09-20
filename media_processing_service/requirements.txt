@@ -11,3 +11,4 @@ ffmpeg-python==0.2.0
 celery[redis]==5.4.0
 minio==7.2.15
 psycopg2-binary==2.9.9
+pytest==8.3.5
