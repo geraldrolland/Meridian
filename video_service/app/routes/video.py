@@ -114,8 +114,6 @@ async def complete_upload(
 
     parts_data = [{"part_number": p.part_number, "etag": p.etag} for p in body.parts]
     complete_multipart_upload(video_id, video.filename, body.upload_id, parts_data)
-
-    video.status = VideoStatus.QUEUED.value
     video.multipart_upload_id = None
     await session.commit()
 

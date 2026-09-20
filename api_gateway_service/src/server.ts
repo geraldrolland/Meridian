@@ -8,6 +8,7 @@ import { rateLimiter } from './middleware/ratelimit';
 import { requestLogger, logger } from './middleware/logger';
 import { errorHandler } from './middleware/errorHandler';
 import proxyRouter from './proxy';
+import { createWsProxy } from './proxy/ws';
 
 const app = express();
 
@@ -56,9 +57,11 @@ app.use(errorHandler);
  * Starts the HTTP server.
  * Logs the bound address and registered route prefixes on startup.
  */
-app.listen(config.port, config.host, () => {
+const server = app.listen(config.port, config.host, () => {
   logger.info(`API Gateway running on ${config.host}:${config.port}`);
   logger.info(`Registered routes: ${config.routes.map((r) => r.prefix).join(', ') || 'none'}`);
 });
+
+createWsProxy(server);
 
 export default app;

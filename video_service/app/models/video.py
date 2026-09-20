@@ -14,6 +14,7 @@ class VideoStatus(str, Enum):
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    DLQ_PENDING = "DLQ_PENDING"
 
 
 class UploadRequest(BaseModel):

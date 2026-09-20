@@ -1,12 +1,16 @@
+"""SQLModel table and enums for the transactional outbox."""
+
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import JSON, Column
 from sqlmodel import SQLModel, Field
 
 
 class OutboxStatus(str, Enum):
+    """Outbox event state."""
+
     PENDING = "PENDING"
     PROCESSED = "PROCESSED"
     FAILED = "FAILED"
@@ -23,11 +27,11 @@ class Outbox(SQLModel, table=True):
         max_length=36,
     )
     topic: str = Field(max_length=255)
-    timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
-        nullable=False,
-    )
-    payload: dict = Field(sa_column=Column(JSON, nullable=False))
+    payload: dict = Field(default={}, sa_column=Column(JSON, nullable=True))
     status: str = Field(default=OutboxStatus.PENDING.value, max_length=32)
     retry_count: int = Field(default=0)
     retry_after: datetime | None = Field(default=None, nullable=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        nullable=False,
+    )

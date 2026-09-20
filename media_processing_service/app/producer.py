@@ -1,5 +1,12 @@
+"""Singleton sync Kafka producer for the media processing service.
+
+Provides a publish helper that serialises payloads as JSON and
+injects a UTC timestamp before sending to Kafka.
+"""
+
 import json
 import logging
+from datetime import datetime, timezone
 
 from kafka import KafkaProducer as SyncKafkaProducer
 from kafka.errors import NoBrokersAvailable
@@ -40,11 +47,15 @@ class KafkaProducer:
             logger.info("Kafka producer stopped")
 
     def publish(self, topic: str, payload: dict) -> None:
-        from datetime import datetime, timezone
-        """Publish a message to Kafka synchronously. Raises NoBrokersAvailable if broker is offline."""
+        """Publish a message to Kafka synchronously.
+
+        Injects a UTC timestamp into the payload before sending.
+        Auto-initializes the producer if not already initialized.
+        Raises NoBrokersAvailable if the broker is offline.
+        """
         if self._producer is None:
-            raise RuntimeError("Kafka producer not initialized")
-        payload.update({"timestamp": datetime.now(timezone.utc).timestamp()})  # Add timestamp to payload
+            self.initialize()
+        payload.update({"timestamp": datetime.now(timezone.utc).timestamp()})
         self._producer.send(topic, payload)
         self._producer.flush()
         logger.info("Published event to topic=%s", topic)
