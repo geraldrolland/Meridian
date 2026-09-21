@@ -67,7 +67,7 @@ class TestPublishUpdate:
         mock_redis.publish = AsyncMock()
 
         with patch("app.websocket.get_redis", return_value=mock_redis):
-            await publish_update("vid-1", "QUEUED", "test.mp4", 42)
+            await publish_update("vid-1", "QUEUED", 42)
 
         mock_redis.publish.assert_called_once()
         call_args = mock_redis.publish.call_args
@@ -75,7 +75,6 @@ class TestPublishUpdate:
         payload = json.loads(call_args[0][1])
         assert payload["video_id"] == "vid-1"
         assert payload["status"] == "QUEUED"
-        assert payload["filename"] == "test.mp4"
         assert payload["user_id"] == 42
 
 

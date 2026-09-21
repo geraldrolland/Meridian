@@ -7,6 +7,7 @@ from aiokafka import AIOKafkaConsumer, TopicPartition
 
 from app.config import settings
 from app.database import async_session_factory
+from app.websocket import publish_update
 
 from app.consumers.base import AppRebalanceListener
 
@@ -55,6 +56,12 @@ async def consume_failure_messages(consumer: AIOKafkaConsumer) -> None:
                             video_id,
                             video.num_of_retries,
                         )
+                        if video.user_id is not None:
+                            await publish_update(
+                                video_id=video_id,
+                                status=VideoStatus.FAILED.value,
+                                user_id=video.user_id,
+                            )
                     else:
                         video.status = VideoStatus.RETRY.value
                         await session.commit()
@@ -63,6 +70,12 @@ async def consume_failure_messages(consumer: AIOKafkaConsumer) -> None:
                             video_id,
                             video.num_of_retries,
                         )
+                        if video.user_id is not None:
+                            await publish_update(
+                                video_id=video_id,
+                                status=VideoStatus.RETRY.value,
+                                user_id=video.user_id,
+                            )
 
                 await consumer.commit(
                     {TopicPartition(msg.topic, msg.partition): msg.offset + 1}

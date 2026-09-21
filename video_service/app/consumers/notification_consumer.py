@@ -10,6 +10,7 @@ from app.config import settings
 from app.database import async_session_factory
 from app.models.events import MinIOEvent
 from app.models.notification import BucketNotificationEvent
+from app.websocket import publish_update
 
 from app.consumers.base import AppRebalanceListener
 
@@ -40,6 +41,16 @@ async def consume_messages(consumer: AIOKafkaConsumer) -> None:
                     session.add(record)
                     await session.commit()
                     event_id = record.id
+
+                    if record.video_id:
+                        from app.models.video import Video
+                        video = await session.get(Video, record.video_id)
+                        if video and video.user_id is not None:
+                            await publish_update(
+                                video_id=record.video_id,
+                                status=video.status,
+                                user_id=video.user_id,
+                            )
 
                 logger.info(
                     "Stored event id=%s topic=%s partition=%d offset=%d eventName=%s key=%s",

@@ -48,12 +48,11 @@ def verify_proxy_signature(path: str, signature: str, timestamp_str: str) -> boo
     return hmac.compare_digest(expected, signature)
 
 
-async def publish_update(video_id: str, status: str, filename: str, user_id: int) -> None:
+async def publish_update(video_id: str, status: str, user_id: int) -> None:
     r = get_redis()
     message = json.dumps({
         "video_id": video_id,
         "status": status,
-        "filename": filename,
         "user_id": user_id,
     })
     await r.publish("video:notification", message)

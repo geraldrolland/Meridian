@@ -7,6 +7,7 @@ from aiokafka import AIOKafkaConsumer, TopicPartition
 
 from app.config import settings
 from app.database import async_session_factory
+from app.websocket import publish_update
 
 from app.consumers.base import AppRebalanceListener
 
@@ -48,6 +49,13 @@ async def consume_processing_messages(consumer: AIOKafkaConsumer) -> None:
                             "[processing] Video %s status set to PROCESSING",
                             video_id,
                         )
+
+                        if video.user_id is not None:
+                            await publish_update(
+                                video_id=video_id,
+                                status=VideoStatus.PROCESSING.value,
+                                user_id=video.user_id,
+                            )
                     else:
                         logger.info(
                             "[processing] Video %s not found or not QUEUED, skipping",

@@ -7,6 +7,7 @@ from aiokafka import AIOKafkaConsumer, TopicPartition
 
 from app.config import settings
 from app.database import async_session_factory
+from app.websocket import publish_update
 
 from app.consumers.base import AppRebalanceListener
 
@@ -52,6 +53,13 @@ async def consume_manifest_generating_messages(consumer: AIOKafkaConsumer) -> No
                             "[manifest-generating] Video %s status set to GENERATING_MANIFEST",
                             video_id,
                         )
+
+                        if video.user_id is not None:
+                            await publish_update(
+                                video_id=video_id,
+                                status=VideoStatus.GENERATING_MANIFEST.value,
+                                user_id=video.user_id,
+                            )
 
                 await consumer.commit(
                     {TopicPartition(msg.topic, msg.partition): msg.offset + 1}
