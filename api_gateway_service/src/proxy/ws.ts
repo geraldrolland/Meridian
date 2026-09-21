@@ -25,8 +25,13 @@ function createWsProxy(server: http.Server): void {
 
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
-    const match = url.pathname.match(/^\/ws\/dashboard\/([^/]+)$/);
 
+    // Match /ws/dashboard/{user_id}
+    const dashboardMatch = url.pathname.match(/^\/ws\/dashboard\/([^/]+)$/);
+    // Match /ws/video/{user_id}
+    const videoMatch = url.pathname.match(/^\/ws\/video\/([^/]+)$/);
+
+    const match = dashboardMatch || videoMatch;
     if (!match) {
       socket.destroy();
       return;
@@ -34,6 +39,7 @@ function createWsProxy(server: http.Server): void {
 
     const userId = match[1];
     const token = url.searchParams.get('token');
+    const isVideoWs = !!videoMatch;
 
     if (!token) {
       wss.handleUpgrade(req, socket, head, (ws) => {
@@ -78,11 +84,18 @@ function createWsProxy(server: http.Server): void {
         }
 
         wss.handleUpgrade(req, socket, head, (clientWs) => {
-          const wsPath = `/ws/dashboard/${userId}`;
+          const wsPath = `/ws/video/${userId}`;
           const { signature, timestamp } = signWsRequest(wsPath);
 
-          const dashboardWs = new WebSocket(
-            `ws://dashboard-service:8002${wsPath}`,
+          const targetService = isVideoWs
+            ? 'ws://video-service:8000'
+            : 'ws://dashboard-service:8002';
+          const targetPath = isVideoWs
+            ? `/ws/video/${userId}`
+            : `/ws/dashboard/${userId}`;
+
+          const upstreamWs = new WebSocket(
+            `${targetService}${targetPath}`,
             {
               headers: {
                 'x-proxy-signature': signature,
@@ -91,44 +104,45 @@ function createWsProxy(server: http.Server): void {
             }
           );
 
-          dashboardWs.on('open', () => {
-            logger.info('WS proxy connected to dashboard-service for user %s', userId);
+          upstreamWs.on('open', () => {
+            const serviceName = isVideoWs ? 'video-service' : 'dashboard-service';
+            logger.info('WS proxy connected to %s for user %s', serviceName, userId);
 
             clientWs.on('message', (data) => {
-              if (dashboardWs.readyState === WebSocket.OPEN) {
-                dashboardWs.send(data);
+              if (upstreamWs.readyState === WebSocket.OPEN) {
+                upstreamWs.send(data);
               }
             });
 
-            dashboardWs.on('message', (data) => {
+            upstreamWs.on('message', (data) => {
               if (clientWs.readyState === WebSocket.OPEN) {
                 clientWs.send(data);
               }
             });
 
             clientWs.on('close', () => {
-              dashboardWs.close();
+              upstreamWs.close();
               logger.info('WS proxy client disconnected for user %s', userId);
             });
 
-            dashboardWs.on('close', () => {
+            upstreamWs.on('close', () => {
               clientWs.close();
-              logger.info('WS proxy dashboard-service disconnected for user %s', userId);
+              logger.info('WS proxy upstream disconnected for user %s', userId);
             });
 
             clientWs.on('error', (err) => {
               logger.error('WS proxy client error for user %s: %s', userId, err.message);
-              dashboardWs.close();
+              upstreamWs.close();
             });
 
-            dashboardWs.on('error', (err) => {
-              logger.error('WS proxy dashboard-service error for user %s: %s', userId, err.message);
+            upstreamWs.on('error', (err) => {
+              logger.error('WS proxy upstream error for user %s: %s', userId, err.message);
               clientWs.close();
             });
           });
 
-          dashboardWs.on('error', (err) => {
-            logger.error('WS proxy dashboard-service connection error: %s', err.message);
+          upstreamWs.on('error', (err) => {
+            logger.error('WS proxy upstream connection error: %s', err.message);
             clientWs.close(1011, 'Backend unavailable');
           });
         });
@@ -139,7 +153,7 @@ function createWsProxy(server: http.Server): void {
       });
   });
 
-  logger.info('WebSocket proxy initialized for /ws/dashboard/*');
+  logger.info('WebSocket proxy initialized for /ws/dashboard/* and /ws/video/*');
 }
 
 export { createWsProxy };

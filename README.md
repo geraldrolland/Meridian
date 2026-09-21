@@ -2,7 +2,7 @@
 
 A production-grade microservices-based video processing platform built with Express, FastAPI, PostgreSQL, Redis, Kafka, and MinIO.
 
-MERIDIAN provides a complete pipeline for user authentication, video upload (with direct-to-storage presigned URLs and multipart support), asynchronous event-driven processing via Kafka and Celery, media transcoding into multiple renditions, and a real-time dashboard with WebSocket push notifications.
+MERIDIAN provides a complete pipeline for user authentication, video upload (with direct-to-storage presigned URLs and multipart support), asynchronous event-driven processing via Kafka and Celery, media transcoding into multiple renditions, and real-time WebSocket push notifications.
 
 ---
 
@@ -60,13 +60,13 @@ The Token Bucket implementation uses an atomic Lua script executed in Redis, han
 
 **WebSocket Proxy:**
 
-The gateway proxies WebSocket connections to the Dashboard Service:
+The gateway proxies WebSocket connections to upstream services:
 
 ```
-ws://localhost:3001/ws/dashboard/<user_id>?token=<token>
+ws://localhost:3001/ws/video/<user_id>?token=<token>
 ```
 
-The gateway validates the JWT token from the query parameter, verifies the session in Redis, then forwards the connection to the Dashboard Service with HMAC-signed upgrade headers.
+The gateway validates the JWT token from the query parameter, verifies the session in Redis, then forwards the connection to the Video Service with HMAC-signed upgrade headers.
 
 **Route Configuration:**
 
@@ -74,8 +74,7 @@ Routes are defined via the `ROUTES` environment variable as a JSON array:
 ```json
 [
   { "prefix": "/api/auth", "target": "http://auth-service:4000" },
-  { "prefix": "/api/video", "target": "http://video-service:8000" },
-  { "prefix": "/api/dashboard", "target": "http://dashboard-service:8002" }
+  { "prefix": "/api/video", "target": "http://video-service:8000" }
 ]
 ```
 
@@ -135,15 +134,17 @@ CREATE TABLE users (
 
 ### Video Service (Port 8000)
 
-Manages video upload, storage, and the async processing lifecycle. Built with FastAPI (async Python), backed by PostgreSQL, MinIO, Kafka, and Celery. Runs 6 Kafka consumers for event-driven state transitions.
+Manages video upload, storage, and the async processing lifecycle. Built with FastAPI (async Python), backed by PostgreSQL, MinIO, Kafka, and Celery. Runs 5 Kafka consumers for event-driven state transitions and provides WebSocket push notifications.
 
 **API Endpoints:**
 
 | Method | Path | Description | Auth Required |
 |--------|------|-------------|---------------|
+| GET | /api/video/{video_id} | Get video by ID (optional ?status= filter) | Yes |
 | POST | /api/video/upload | Create video + generate upload data | Yes |
 | POST | /api/video/{id}/upload/complete | Finalize multipart upload | Yes |
 | POST | /api/video/{id}/upload/abort | Discard multipart upload | Yes |
+| WS | /ws/video/{user_id}?token=<jwt> | WebSocket for real-time updates | Yes (JWT + HMAC) |
 | GET | /ready | Database readiness probe | No |
 
 **Upload Flow:**
@@ -167,6 +168,9 @@ Client                Video Service           MinIO                Kafka
   |                    [Celery beat: process_notifications]           |
   |                         |-- Extract video_id |                    |
   |                         |-- Set QUEUED       |                    |
+  |                         |                    |                    |
+  |                    [Celery beat: process_queued_videos]           |
+  |                         |-- Set published=T  |                    |
   |                         |-- Create Outbox    |                    |
   |                         |                    |                    |
   |                    [Celery beat: process_outbox_events]           |
@@ -196,11 +200,31 @@ AWAITING_UPLOAD --> QUEUED --> PROCESSING --> GENERATING_MANIFEST --> COMPLETED
 
 Ensures reliable event publishing to Kafka even during broker outages:
 
-1. When a notification is processed, an Outbox record is created in the same database transaction as the video status update
-2. A separate Celery beat task (`process_outbox_events`, every 10s) polls PENDING outbox records
-3. Events are published to Kafka with distributed Redis locks to prevent duplicate processing
-4. Failed events are retried up to 5 times with 2-minute backoff intervals
-5. After 5 failures, the event is marked FAILED and the associated video status is set to FAILED
+1. `process_notifications` sets video status to QUEUED (no outbox creation)
+2. `process_queued_videos` polls QUEUED videos with `published=false` in batches of 50, sets `published=true`, and creates an Outbox record in the same DB transaction
+3. A separate Celery beat task (`process_outbox_events`, every 10s) polls PENDING outbox records
+4. Events are published to Kafka with distributed Redis locks to prevent duplicate processing
+5. Failed events are retried up to 5 times with 2-minute backoff intervals
+6. After 5 failures, the event is marked FAILED and the associated video status is set to FAILED
+
+**WebSocket Architecture:**
+
+```
+Client (Browser)              API Gateway               Video Service
+      |                            |                           |
+      |-- WS /ws/video/uid ------>|-- HMAC signed upgrade --->|
+      |   ?token=<jwt>             |   + JWT validation       |
+      |                            |                           |-- accept()
+      |<--- Connection established -|                           |-- register in dict
+      |                            |                           |
+      |                       [Redis pubsub: video:notification]
+      |                            |                           |
+      |<--- send_text(data) -------|<-- publish_update() -----|
+```
+
+- **Connection Registry**: `dict[user_id, list[WebSocket]]` maps each user to their active WebSocket connections
+- **Shared Redis Pub/Sub**: Events published to the `video:notification` channel are forwarded to the relevant user's WebSocket connections
+- **Stale Connection Cleanup**: Dead connections are automatically removed from the registry
 
 **Distributed Locking:**
 
@@ -331,90 +355,6 @@ Both locks use a 2-minute TTL with a 5-second blocking timeout. Locks are always
 
 ---
 
-### Dashboard Service (Port 8002)
-
-Provides a real-time dashboard for monitoring video processing status, with DLQ (Dead-Letter Queue) consumption and WebSocket push notifications. Built with FastAPI (Python), backed by PostgreSQL, Redis, and Kafka.
-
-**Key responsibilities:**
-- Consumes `video.DLQ` topic events and stores failed video records
-- Serves a REST API for listing failed videos per user
-- Exposes WebSocket connections for real-time status updates
-- Uses shared Redis pub/sub (`dashboard:notification` channel) for cross-process message delivery
-- Supports manual retry flow: user triggers retry -> publishes to `video.retry` topic
-
-**API Endpoints:**
-
-| Method | Path | Description | Auth Required |
-|--------|------|-------------|---------------|
-| GET | /api/dashboard/videos?user_id=N | List failed/processed videos for user | Yes (HMAC) |
-| POST | /api/dashboard/videos/{video_id}/retry | Trigger retry for a failed video | Yes (HMAC) |
-| WS | /ws/dashboard/{user_id}?token=<jwt> | WebSocket for real-time updates | Yes (JWT + HMAC) |
-| GET | /health | Health check | No |
-
-**DLQ Consumer:**
-
-The consumer subscribes to `video.DLQ` and processes each failed event:
-1. Validates the incoming JSON payload
-2. Creates or updates a `DashboardVideo` record (status: FAILED)
-3. Publishes the update to Redis pub/sub channel `dashboard:notification`
-4. Forwards the event to `video.retry` topic for reprocessing
-5. Commits the Kafka offset
-
-**WebSocket Architecture:**
-
-```
-Client (Browser)              API Gateway               Dashboard Service
-      |                            |                           |
-      |-- WS /ws/dashboard/uid --->|-- HMAC signed upgrade --->|
-      |   ?token=<jwt>             |   + JWT validation       |
-      |                            |                           |-- accept()
-      |<--- Connection established -|                           |-- register in dict
-      |                            |                           |
-      |                       [Redis pubsub: dashboard:notification]
-      |                            |                           |
-      |<--- send_text(data) -------|<-- publish_update() -----|
-```
-
-- **Connection Registry**: `dict[user_id, list[WebSocket]]` maps each user to their active WebSocket connections
-- **Shared Redis Pub/Sub**: The DLQ consumer publishes events to the `dashboard:notification` channel. All Dashboard Service instances subscribe and forward messages to the relevant user's WebSocket connections
-- **Stale Connection Cleanup**: Dead connections are automatically removed from the registry
-
-**Retry Flow:**
-
-```
-POST /api/dashboard/videos/{video_id}/retry
-    |
-    v
-Update DashboardVideo (status: RETRYING, retry_count++)
-    |
-    v
-Publish to Kafka video.retry topic
-    |
-    v
-Media Processing Service consumes video.retry
-    |
-    v
-Re-enters processing pipeline
-```
-
-**Database Schema:**
-
-**dashboard_videos:**
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | VARCHAR(36) PK | Video identifier |
-| `user_id` | INT | Owner user ID (indexed) |
-| `filename` | VARCHAR(512) | Original filename |
-| `status` | VARCHAR(32) | FAILED / PROCESSING / COMPLETED / RETRYING |
-| `reason` | VARCHAR(512) | Failure reason |
-| `retry_count` | INT | Number of retry attempts |
-| `last_retry_at` | TIMESTAMP | Last retry timestamp |
-| `final_status` | VARCHAR(32) | Final outcome after retries |
-| `created_at` | TIMESTAMP | Record creation time |
-| `updated_at` | TIMESTAMP | Last update time |
-
----
-
 ## Infrastructure
 
 | Service | Port (Host / Container) | Purpose |
@@ -422,9 +362,8 @@ Re-enters processing pipeline
 | PostgreSQL (auth-db) | 5433 / 5432 | Auth user storage |
 | PostgreSQL (video-db) | 5434 / 5432 | Video records, notifications, outbox |
 | PostgreSQL (media-processing-db) | 5435 / 5432 | Jobs, transcode tasks, upload tasks, outbox |
-| PostgreSQL (dashboard-db) | 5436 / 5432 | Dashboard video records |
 | Redis | 6379 | Sessions, rate limits, Celery result backend, distributed locks, pub/sub |
-| Kafka (KRaft mode) | 9092 | Event streaming (6 topics) |
+| Kafka (KRaft mode) | 9092 | Event streaming (8 topics) |
 | MinIO (API) | 9000 | S3-compatible video object storage |
 | MinIO (Console) | 9001 | MinIO web UI |
 | RabbitMQ (AMQP) | 5672 | Celery task broker |
@@ -439,8 +378,6 @@ Re-enters processing pipeline
 | `bucketnotifications` | 4 | MinIO | Video Service | MinIO bucket PUT event notifications |
 | `video.queued` | 8 | Video Service | Media Processing Service | Video ready for processing |
 | `video.processing` | 4 | Media Processing Service | Video Service | Video processing started |
-| `video.retry` | 4 | Dashboard Service | Video Service | Retry events from dashboard |
-| `video.DLQ` | 4 | Media Processing Service | Dashboard Service | Dead-letter queue for failed events |
 | `job.completed` | 4 | Media Processing Service | Video Service | Job finished processing successfully |
 | `job.failed` | 4 | Media Processing Service | Video Service | Job failed after processing attempts |
 | `manifest.generating` | 4 | Media Processing Service | Video Service | Manifest generation started |
@@ -467,7 +404,7 @@ MERIDIAN implements defense-in-depth across five layers:
 | WebSocket | HMAC Proxy Signature | WebSocket connections from gateway include HMAC-signed headers |
 | Video | Extension Whitelist | Only approved video extensions accepted |
 | Data | Database Isolation | Separate PostgreSQL databases per service (4 databases) |
-| Data | Redis DB Separation | DB 0: sessions/rate limits, DB 1: Celery results, DB 2: distributed locks (video), DB 3: distributed locks (media), DB 4: dashboard pub/sub |
+| Data | Redis DB Separation | DB 0: sessions/rate limits, DB 1: Celery results, DB 2: distributed locks (video), DB 3: pub/sub (video), DB 4: distributed locks (media) |
 
 ---
 
@@ -518,31 +455,28 @@ cd Meridian
 docker compose up --build -d
 ```
 
-This command builds all service images and starts **22 containers**:
+This command builds all service images and starts **18 containers**:
 
 | Container | Service | Purpose |
 |-----------|---------|---------|
 | meridian-api-gateway | API Gateway | Entry point, auth, rate limiting, WebSocket proxy |
 | meridian-auth-service | Auth Service | User registration, login, JWT |
-| meridian-video-service | Video Service | Video upload, processing lifecycle |
-| meridian-video-celery-worker | Video Celery Worker | Processes notifications + outbox + failed videos |
-| meridian-video-celery-beat | Video Celery Beat | Periodic task scheduler (notifications + outbox) |
+| meridian-video-service | Video Service | Video upload, processing lifecycle, WebSocket |
+| meridian-video-celery-worker | Video Celery Worker | Processes notifications + queued videos + outbox |
+| meridian-video-celery-beat | Video Celery Beat | Periodic task scheduler |
 | meridian-media-processing-service | Media Processing Service | FFmpeg pipeline, transcoding, segmentation |
 | meridian-media-processing-celery-worker | Media Processing Celery Worker | 7 periodic processing tasks |
 | meridian-media-processing-celery-beat | Media Processing Celery Beat | Periodic task scheduler |
-| meridian-dashboard-service | Dashboard Service | DLQ consumer, WebSocket, retry flow |
 | meridian-auth-db | PostgreSQL (auth) | Auth user storage |
 | meridian-video-db | PostgreSQL (video) | Video records, outbox |
 | meridian-media-processing-db | PostgreSQL (media-processing) | Jobs, tasks, outbox |
-| meridian-dashboard-db | PostgreSQL (dashboard) | Dashboard video records |
 | meridian-redis | Redis | Sessions, rate limits, locks, pub/sub |
 | meridian-kafka | Kafka (KRaft) | Event streaming |
-| meridian-kafka-init | Kafka Init | Creates all 6 topics |
+| meridian-kafka-init | Kafka Init | Creates all 8 topics |
 | meridian-minio | MinIO | S3-compatible object storage |
 | meridian-minio-init | MinIO Init | Creates viduploads bucket + notification config |
 | meridian-rabbitmq | RabbitMQ | Celery task broker |
-| meridian-celery-worker | Celery Worker (video) | Processes notifications + outbox + failed videos |
-| meridian-celery-beat | Celery Beat (video) | Periodic task scheduler (notifications + outbox) |
+| meridian-celery-worker | Celery Worker (video) | Processes notifications + queued videos + outbox |
 
 #### Step 3: Verify All Services Are Running
 
@@ -555,7 +489,6 @@ docker compose logs api-gateway | grep -i "ready\|listening"
 docker compose logs auth-service | grep -i "ready\|listening"
 docker compose logs video-service | grep -i "ready\|listening"
 docker compose logs media-processing-service | grep -i "ready\|listening"
-docker compose logs dashboard-service | grep -i "started"
 ```
 
 #### Step 4: Test the API Gateway
@@ -591,8 +524,6 @@ docker compose logs -f auth-service
 docker compose logs -f video-service
 docker compose logs -f video-celery-worker
 docker compose logs -f media-processing-service
-docker compose logs -f dashboard-service
-docker compose logs -f celery-worker
 docker compose logs -f media-processing-celery-worker
 
 # View last 100 lines of a service
@@ -628,14 +559,12 @@ docker compose down --rmi all
 | Auth Service | http://localhost:4000 |
 | Video Service | http://localhost:8000 |
 | Media Processing Service | http://localhost:8001 |
-| Dashboard Service | http://localhost:8002 |
 | MinIO Console | http://localhost:9001 |
 | RabbitMQ Management | http://localhost:15672 |
 | Kafka (external) | localhost:9092 |
 | Auth DB | localhost:5433 |
 | Video DB | localhost:5434 |
 | Media Processing DB | localhost:5435 |
-| Dashboard DB | localhost:5436 |
 | Redis | localhost:6379 |
 
 ---
@@ -717,15 +646,6 @@ celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo
 
 # Terminal 3: Celery beat (periodic task scheduler)
 celery -A app.celery_app:celery_app beat --loglevel=info
-```
-
-### Dashboard Service
-
-```bash
-cd dashboard_service
-cp .env.example .env       # configure environment
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
 ```
 
 ---
@@ -871,7 +791,6 @@ MERIDIAN/
 │   │   │   ├── __init__.py           # Re-exports all consumers
 │   │   │   ├── base.py               # AppRebalanceListener
 │   │   │   ├── notification_consumer.py    # bucketnotifications → QUEUED
-│   │   │   ├── retry_consumer.py           # video.retry → QUEUED
 │   │   │   ├── processing_consumer.py      # video.processing → PROCESSING
 │   │   │   ├── failure_consumer.py         # job.failed/manifest.failed → FAILED
 │   │   │   ├── manifest_generating_consumer.py  # manifest.generating
@@ -879,19 +798,20 @@ MERIDIAN/
 │   │   ├── producer.py               # KafkaProducer (auto event_id/timestamp)
 │   │   ├── minio_client.py           # MinIO presigned URLs + multipart
 │   │   ├── celery_app.py             # Celery configuration (video queue routing)
-│   │   ├── tasks.py                  # process_notifications, outbox, failed_videos
+│   │   ├── tasks.py                  # process_notifications, queued_videos, outbox, failed
 │   │   ├── lock.py                   # Redis distributed locks (PROCESS + COMMIT)
 │   │   ├── main.py                   # FastAPI app bootstrap + startup/shutdown
+│   │   ├── websocket.py              # WebSocket manager + Redis pub/sub
 │   │   ├── middleware/               # Proxy signature + session verification
 │   │   │   ├── check_proxy_signature.py
 │   │   │   └── get_user_session.py
 │   │   ├── models/                   # SQLModel: video, notification, outbox, session
-│   │   │   ├── video.py              # VideoStatus: 7 states (incl. GENERATING_MANIFEST)
+│   │   │   ├── video.py              # VideoStatus: 7 states + published field
 │   │   │   ├── notification.py       # BucketNotificationEvent (FK video_id)
 │   │   │   ├── outbox.py             # Outbox (FK video_id)
 │   │   │   ├── events.py
 │   │   │   └── session.py
-│   │   ├── routes/                   # Video endpoints + health/readiness
+│   │   ├── routes/                   # Video endpoints + health/readiness + WebSocket
 │   │   │   ├── video.py
 │   │   │   └── ready.py
 │   │   └── utils/                    # S3 key extraction helpers
@@ -949,18 +869,7 @@ MERIDIAN/
 │   ├── Dockerfile.celery             # Celery worker (solo pool)
 │   └── start.sh
 │
-├── dashboard_service/                # FastAPI Python Dashboard Service (Port 8002)
-│   ├── app/
-│   │   ├── main.py                   # FastAPI app + lifespan (DLQ consumer, pub/sub)
-│   │   ├── config.py                 # Pydantic settings
-│   │   ├── database.py               # Async SQLAlchemy engine + session factory
-│   │   ├── consumer.py               # DLQ Kafka consumer (video.DLQ topic)
-│   │   ├── models.py                 # DashboardVideo, DLQEvent, RetryRequest
-│   │   └── routes.py                 # REST API + WebSocket + retry flow
-│   ├── requirements.txt
-│   └── Dockerfile
-│
-├── docker-compose.yml                # Full-stack orchestration (20 containers)
+├── docker-compose.yml                # Full-stack orchestration (18 containers)
 ├── e2e_test.py                       # End-to-end test script
 ├── .gitignore
 └── README.md
@@ -974,7 +883,6 @@ MERIDIAN/
 |---------|---------------|---------|
 | **Transactional Outbox** | Outbox table in video_db and media_processing_db with Celery beat publisher | Reliable event delivery even during Kafka outages |
 | **Distributed Locking** | Redis locks with TTL via `lock.py` (dual-lock: PROCESSING + COMMITTING, nested pattern) | Prevents duplicate task processing across workers |
-| **Dead-Letter Queue** | `video.DLQ` topic consumes failed events; dashboard stores + offers retry | Failed events are not lost; operators can inspect and retry |
 | **Token Bucket** | Atomic Redis Lua script in API Gateway | Burst-tolerant rate limiting without race conditions |
 | **Singleton** | Singleton pattern for MinIO client and Kafka producer in media_processing_service | Ensures single instance across Celery worker processes |
 | **Presigned URLs** | MinIO presigned POST/PUT | Client uploads bypass application server for large files |
@@ -982,7 +890,7 @@ MERIDIAN/
 | **Circuit Breaker** | Celery retry with backoff + outbox retry logic (5 retries, 2-min backoff) | Graceful degradation during broker failures |
 | **Middleware Pipeline** | Express middleware chain in API Gateway | Composable, order-dependent request processing |
 | **Health Probes** | `/health` and `/ready` endpoints per service | Kubernetes-ready liveness and readiness checks |
-| **WebSocket Pub/Sub** | Shared Redis pub/sub on `dashboard:notification` channel | Cross-instance real-time push to WebSocket clients |
+| **WebSocket Pub/Sub** | Shared Redis pub/sub on `video:notification` channel | Cross-instance real-time push to WebSocket clients |
 
 ---
 
@@ -1047,6 +955,8 @@ MERIDIAN/
 | `CELERY_RESULT_BACKEND` | -- | Redis URL for Celery results |
 | `REDIS_HOST` | redis | Redis host |
 | `REDIS_PORT` | 6379 | Redis port |
+| `REDIS_DB` | 3 | Redis database for pub/sub |
+| `JWT_SECRET` | -- | JWT signing secret (for WebSocket auth) |
 | `ALLOWED_VIDEO_EXTENSIONS` | mp4,mov,avi,mkv,webm,flv,wmv | Comma-separated allowed extensions |
 | `MULTIPART_THRESHOLD` | 104857600 | File size (bytes) for multipart switch (100 MB) |
 | `DEFAULT_PART_SIZE` | 5242880 | Part size (bytes) for multipart uploads (5 MB) |
@@ -1072,23 +982,6 @@ MERIDIAN/
 | `MINIO_SECURE` | false | Use HTTPS for MinIO |
 | `CELERY_BROKER_URL` | amqp://guest:guest@rabbitmq:5672// | RabbitMQ broker |
 | `CELERY_RESULT_BACKEND` | redis://redis:6379/1 | Redis for Celery results |
-| `LOG_LEVEL` | info | Python logging level |
-
-### Dashboard Service
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | -- | PostgreSQL async connection string |
-| `REDIS_HOST` | redis | Redis host |
-| `REDIS_PORT` | 6379 | Redis port |
-| `REDIS_DB` | 4 | Redis database for pub/sub |
-| `KAFKA_BOOTSTRAP_SERVERS` | kafka:29092 | Kafka broker addresses |
-| `KAFKA_DLQ_TOPIC` | video.DLQ | Dead-letter queue topic |
-| `KAFKA_RETRY_TOPIC` | video.retry | Retry topic |
-| `KAFKA_CONSUMER_GROUP_ID` | meridian-dashboard-consumer-group | Consumer group ID |
-| `KAFKA_AUTO_OFFSET_RESET` | earliest | Offset reset policy |
-| `JWT_SECRET` | -- | JWT signing secret (for WebSocket auth) |
-| `PROXY_SECRET` | -- | HMAC proxy verification secret |
 | `LOG_LEVEL` | info | Python logging level |
 
 ---

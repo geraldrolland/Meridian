@@ -6,11 +6,12 @@ from fastapi import FastAPI
 
 from app.config import settings
 from app.database import init_db, close_db
-from app.consumers import start_consumer, start_retry_consumer, start_processing_consumer, start_failure_consumer, start_manifest_generating_consumer, start_manifest_completed_consumer
+from app.consumers import start_consumer, start_processing_consumer, start_failure_consumer, start_manifest_generating_consumer, start_manifest_completed_consumer
 from app.producer import kafka_producer
 from app.routes.health import router as health_router
 from app.routes.ready import router as ready_router
 from app.routes.video import router as video_router
+from app.websocket import start_pubsub_listener
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -26,26 +27,22 @@ async def lifespan(app: FastAPI):
     await init_db()
     kafka_producer.initialize()
     consumer_task = asyncio.create_task(start_consumer())
-    retry_consumer_task = asyncio.create_task(start_retry_consumer())
     processing_consumer_task = asyncio.create_task(start_processing_consumer())
     failure_consumer_task = asyncio.create_task(start_failure_consumer())
     manifest_generating_consumer_task = asyncio.create_task(start_manifest_generating_consumer())
     manifest_completed_consumer_task = asyncio.create_task(start_manifest_completed_consumer())
+    pubsub_task = asyncio.create_task(start_pubsub_listener())
     logger.info("Video service started")
     yield
     # Shutdown
     consumer_task.cancel()
-    retry_consumer_task.cancel()
     processing_consumer_task.cancel()
     failure_consumer_task.cancel()
     manifest_generating_consumer_task.cancel()
     manifest_completed_consumer_task.cancel()
+    pubsub_task.cancel()
     try:
         await consumer_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await retry_consumer_task
     except asyncio.CancelledError:
         pass
     try:
@@ -62,6 +59,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await manifest_completed_consumer_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await pubsub_task
     except asyncio.CancelledError:
         pass
     kafka_producer.stop()

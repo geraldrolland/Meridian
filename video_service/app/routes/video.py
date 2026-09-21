@@ -2,7 +2,8 @@ import logging
 import math
 import os
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.websockets import WebSocket
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config import settings
@@ -24,6 +25,7 @@ from app.models.video import (
     Video,
     VideoStatus,
 )
+from app.websocket import ws_video_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +42,26 @@ def _video_response(video: Video) -> dict:
         "filename": video.filename,
         "status": video.status,
         "user_id": video.user_id,
+        "published": video.published,
         "created_at": video.created_at.isoformat(),
     }
+
+
+@router.get("/{video_id}")
+async def get_video(
+    video_id: str,
+    status: VideoStatus | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get a video by ID with optional status filter."""
+    video = await session.get(Video, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if status is not None and video.status != status.value:
+        raise HTTPException(status_code=404, detail="Video not found with that status")
+
+    return _video_response(video)
 
 
 @router.post("/upload", status_code=201)
@@ -143,3 +163,8 @@ async def abort_upload(
 
     logger.info("Multipart upload aborted for video %s", video_id)
     return {"status": video.status}
+
+
+@router.websocket("/ws/video/{user_id}")
+async def video_ws(websocket: WebSocket, user_id: str):
+    await ws_video_endpoint(websocket, user_id)

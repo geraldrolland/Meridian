@@ -25,6 +25,8 @@ class Settings(BaseSettings):
         celery_result_backend: Redis URL for Celery result storage.
         redis_host: Redis host for general use.
         redis_port: Redis port.
+        redis_db: Redis database number for pub/sub.
+        jwt_secret: JWT signing secret for WebSocket auth.
         proxy_secret: Shared HMAC-SHA256 secret for API gateway proxy signature verification.
         allowed_video_extensions: File extensions accepted for upload (without dot).
         multipart_threshold: File size in bytes above which multipart upload is used (100 MB).
@@ -35,8 +37,6 @@ class Settings(BaseSettings):
     kafka_topic: str = "bucketnotifications"
     kafka_consumer_group_id: str = "meridian-video-consumer-group"
     kafka_auto_offset_reset: str = "earliest"
-    kafka_retry_topic: str = "video.retry"
-    kafka_retry_consumer_group_id: str = "meridian-video-retry-consumer-group"
     kafka_processing_topic: str = "video.processing"
     kafka_processing_consumer_group_id: str = "meridian-video-processing-consumer-group"
     kafka_job_failed_topic: str = "job.failed"
@@ -56,10 +56,12 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://redis:6379/1"
     redis_host: str = "redis"
     redis_port: int = 6379
+    redis_db: int = 3
+    jwt_secret: str = "test-secret"
     proxy_secret: str = "change-me-in-production"
     allowed_video_extensions: list[str] = ["mp4", "mov", "avi", "mkv", "webm", "flv", "wmv"]
-    multipart_threshold: int = 100 * 1024 * 1024  # 100MB — files larger than this use multipart
-    default_part_size: int = 5 * 1024 * 1024      # 5MB — chunk size for each part
+    multipart_threshold: int = 100 * 1024 * 1024  # 100MB -- files larger than this use multipart
+    default_part_size: int = 5 * 1024 * 1024      # 5MB -- chunk size for each part
     log_level: str = "info"
 
     @property
