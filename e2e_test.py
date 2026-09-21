@@ -599,13 +599,119 @@ mcur.close()
 print("  Seeded data cleaned up")
 
 
+# ══════════════════════════════════════════════════════════════════
+# RETRY ENDPOINT FLOW
+# ══════════════════════════════════════════════════════════════════
+
+RETRY_VIDEO_ID = "retry-e2e-video"
+
+
+# ── Step 21a: Seed video with status=RETRY ─────────────────────────
+print("\n[21a] Seed video with status=RETRY via SQL")
+
+vcur = conn.cursor()
+vcur.execute("DELETE FROM videos WHERE id = %s", (RETRY_VIDEO_ID,))
+conn.commit()
+
+vcur.execute(
+    "INSERT INTO videos (id, filename, status, num_of_retries, user_id, published, created_at) "
+    "VALUES (%s, %s, %s, %s, %s, %s, NOW()) ON CONFLICT (id) DO NOTHING",
+    (RETRY_VIDEO_ID, "retry_test.mp4", "RETRY", 2, user_id, False),
+)
+conn.commit()
+vcur.close()
+print(f"  Inserted video {RETRY_VIDEO_ID} with status=RETRY, num_of_retries=2")
+
+
+# ── Step 21b: GET video → expect status=RETRY ─────────────────────
+print("\n[21b] GET /api/video/{video_id} → expect status=RETRY")
+sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}")
+r = requests.get(
+    f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
+    headers={**sign_headers, "Content-Type": "application/json"},
+)
+_assert(r.status_code == 200, f"status=200 (got {r.status_code})")
+_assert(r.json()["status"] == "RETRY", f"status=RETRY (got {r.json()['status']})")
+_assert(r.json()["published"] is False, "published=false")
+print(f"  Video status={r.json()['status']}, published={r.json()['published']}")
+
+
+# ── Step 21c: POST /retry → expect 200 + status=QUEUED ────────────
+print("\n[21c] POST /api/video/{video_id}/retry → expect 200 + status=QUEUED")
+sign_headers = _proxy_sign("POST", f"/api/video/{RETRY_VIDEO_ID}/retry")
+r = requests.post(
+    f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}/retry",
+    headers={**sign_headers, "Content-Type": "application/json"},
+)
+_assert(r.status_code == 200, f"status=200 (got {r.status_code})")
+_assert(r.json()["status"] == "QUEUED", f"status=QUEUED (got {r.json()['status']})")
+_assert(r.json()["published"] is False, "published=false")
+print(f"  Retry succeeded: status={r.json()['status']}, published={r.json()['published']}")
+
+
+# ── Step 21d: GET video → confirm QUEUED ──────────────────────────
+print("\n[21d] GET /api/video/{video_id} → confirm status=QUEUED")
+sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}")
+r = requests.get(
+    f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
+    headers={**sign_headers, "Content-Type": "application/json"},
+)
+_assert(r.status_code == 200, f"status=200 (got {r.status_code})")
+_assert(r.json()["status"] == "QUEUED", f"status=QUEUED (got {r.json()['status']})")
+print(f"  Confirmed: status={r.json()['status']}")
+
+
+# ── Step 21e: POST /retry again → expect 400 (not RETRY) ──────────
+print("\n[21e] POST /api/video/{video_id}/retry (already QUEUED) → expect 400")
+sign_headers = _proxy_sign("POST", f"/api/video/{RETRY_VIDEO_ID}/retry")
+r = requests.post(
+    f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}/retry",
+    headers={**sign_headers, "Content-Type": "application/json"},
+)
+_assert(r.status_code == 400, f"status=400 (got {r.status_code})")
+_assert("not in RETRY" in r.json()["detail"], f"error mentions RETRY (got {r.json()['detail']})")
+print(f"  Correctly rejected: {r.json()['detail']}")
+
+
+# ── Step 21f: POST /retry on nonexistent video → expect 404 ───────
+print("\n[21f] POST /api/video/nonexistent/retry → expect 404")
+sign_headers = _proxy_sign("POST", "/api/video/nonexistent/retry")
+r = requests.post(
+    f"{VIDEO_SERVICE}/api/video/nonexistent/retry",
+    headers={**sign_headers, "Content-Type": "application/json"},
+)
+_assert(r.status_code == 404, f"status=404 (got {r.status_code})")
+print(f"  Correctly returned 404")
+
+
+# ── Step 21g: GET with status filter mismatch → expect 404 ────────
+print("\n[21g] GET /api/video/{video_id}?status=COMPLETED → expect 404")
+sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}?status=COMPLETED")
+r = requests.get(
+    f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
+    params={"status": "COMPLETED"},
+    headers={**sign_headers, "Content-Type": "application/json"},
+)
+_assert(r.status_code == 404, f"status=404 (got {r.status_code})")
+print(f"  Status filter correctly rejected mismatch")
+
+
+# ── Step 21h: Cleanup retry test data ─────────────────────────────
+print("\n[21h] Cleanup retry test data")
+vcur = conn.cursor()
+vcur.execute("DELETE FROM videos WHERE id = %s", (RETRY_VIDEO_ID,))
+conn.commit()
+vcur.close()
+print(f"  Cleaned up {RETRY_VIDEO_ID}")
+
+
 # ── Cleanup DB connections ──────────────────────────────────────────
 media_conn.close()
 conn.close()
 
 
-# ── Step 20: Logout ───────────────────────────────────────────────
-print("\n[20] POST /api/auth/logout → expect 200")
+# ── Step 22: Logout ───────────────────────────────────────────────
+print("\n[22] POST /api/auth/logout → expect 200")
 r = requests.post(
     f"{API_GATEWAY}/api/auth/logout",
     headers={"Authorization": f"Bearer {access_token}"},

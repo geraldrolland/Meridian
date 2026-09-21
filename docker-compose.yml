@@ -71,9 +71,10 @@ services:
       - auth_db_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d auth_db"]
-      interval: 10s
-      timeout: 5s
+      interval: 5s
+      timeout: 3s
       retries: 5
+      start_period: 10s
     networks:
       - meridian
     restart: unless-stopped
@@ -87,8 +88,8 @@ services:
       - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      interval: 5s
+      timeout: 3s
       retries: 5
     networks:
       - meridian
@@ -114,8 +115,8 @@ services:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
-      interval: 10s
-      timeout: 10s
+      interval: 5s
+      timeout: 5s
       retries: 10
       start_period: 30s
     networks:
@@ -167,9 +168,10 @@ services:
       - minio_data:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      timeout: 5s
+      interval: 5s
+      timeout: 3s
       retries: 5
+      start_period: 10s
     networks:
       - meridian
     restart: unless-stopped
@@ -205,9 +207,10 @@ services:
       - video_db_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d video_db"]
-      interval: 10s
-      timeout: 5s
+      interval: 5s
+      timeout: 3s
       retries: 5
+      start_period: 10s
     networks:
       - meridian
     restart: unless-stopped
@@ -231,6 +234,12 @@ services:
       - MINIO_BUCKET=viduploads
       - PROXY_SECRET=test-proxy-secret
       - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
       video-db:
         condition: service_healthy
@@ -253,9 +262,10 @@ services:
       RABBITMQ_DEFAULT_PASS: guest
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
-      interval: 10s
-      timeout: 5s
+      interval: 5s
+      timeout: 3s
       retries: 5
+      start_period: 15s
     networks:
       - meridian
     restart: unless-stopped
@@ -272,6 +282,12 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     command: celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo -Q video
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     depends_on:
       video-db:
         condition: service_healthy
@@ -295,6 +311,12 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     command: celery -A app.celery_app:celery_app beat --loglevel=info
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -315,9 +337,10 @@ services:
       - media_processing_db_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d media_processing_db"]
-      interval: 10s
-      timeout: 5s
+      interval: 5s
+      timeout: 3s
       retries: 5
+      start_period: 10s
     networks:
       - meridian
     restart: unless-stopped
@@ -338,6 +361,12 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
       media-processing-db:
         condition: service_healthy
@@ -368,6 +397,12 @@ services:
       - MINIO_SECURE=false
       - LOG_LEVEL=info
     command: celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo -Q media_processing
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     depends_on:
       media-processing-db:
         condition: service_healthy
@@ -400,6 +435,12 @@ services:
       - MINIO_SECURE=false
       - LOG_LEVEL=info
     command: celery -A app.celery_app:celery_app beat --loglevel=info
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     depends_on:
       rabbitmq:
         condition: service_healthy
