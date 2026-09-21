@@ -123,7 +123,12 @@ def _setup_common_mocks(monkeypatch):
 
     import app.config as cfg
     cfg.settings = MagicMock()
+    cfg.settings.outbox_max_retry = 5
+    cfg.settings.bucketnotification_max_retry = 5
     cfg.logger = MagicMock()
+
+    import app.tasks as _tasks_mod
+    _tasks_mod.settings = cfg.settings
 
     import app.lock as lock_mod_inst
     lock_mod_inst.LockState = MOCK_LOCK_STATE

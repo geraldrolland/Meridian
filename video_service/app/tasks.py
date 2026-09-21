@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 
 from app.celery_app import celery_app
+from app.config import settings
 from app.database_sync import get_sync_session
 from app.lock import LockState, acquire_lock, release_lock
 from app.models.notification import BucketNotificationEvent, NotificationStatus
@@ -113,8 +114,8 @@ def process_notifications():
                 try:
                     notif = session.get(BucketNotificationEvent, notification.id)
                     if notif:
-                        if notif.num_of_retry >= 5:
-                            notif.num_of_retry = 5
+                        if notif.num_of_retry >= settings.bucketnotification_max_retry:
+                            notif.num_of_retry = settings.bucketnotification_max_retry
                             notif.retry_after = None
                             notif.status = NotificationStatus.FAILED.value
                             video = session.get(Video, notif.video_id)
@@ -293,8 +294,8 @@ def process_outbox_events():
                     outbox = session.get(Outbox, event.id)
                     if outbox:
                         new_count = (outbox.retry_count or 0) + 1
-                        if new_count >= 5:
-                            outbox.retry_count = 5
+                        if new_count >= settings.outbox_max_retry:
+                            outbox.retry_count = settings.outbox_max_retry
                             outbox.retry_after = None
                             outbox.status = OutboxStatus.FAILED.value
                             video_id = outbox.payload.get("video_id")
