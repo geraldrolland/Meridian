@@ -64,6 +64,27 @@ async def get_video(
     return _video_response(video)
 
 
+@router.post("/{video_id}/retry")
+async def retry_video(
+    video_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """Retry a video in RETRY status — sets it back to QUEUED with published=false."""
+    video = await session.get(Video, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if video.status != VideoStatus.RETRY.value:
+        raise HTTPException(status_code=400, detail="Video is not in RETRY status")
+
+    video.status = VideoStatus.QUEUED.value
+    video.published = False
+    await session.commit()
+
+    logger.info("Video %s retried — status=QUEUED, published=false", video_id)
+    return _video_response(video)
+
+
 @router.post("/upload", status_code=201)
 async def upload_video(
     body: UploadRequest,

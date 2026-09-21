@@ -56,21 +56,10 @@ async def consume_failure_messages(consumer: AIOKafkaConsumer) -> None:
                             video.num_of_retries,
                         )
                     else:
-                        from app.models.outbox import Outbox
-
-                        video.status = VideoStatus.DLQ_PENDING.value
-
-                        outbox = Outbox(
-                            topic="video.DLQ",
-                            video_id=video_id,
-                            payload={
-                                "video_id": video_id,
-                            },
-                        )
-                        session.add(outbox)
+                        video.status = VideoStatus.RETRY.value
                         await session.commit()
                         logger.info(
-                            "[failure] Video %s set to DLQ_PENDING (num_of_retries=%d)",
+                            "[failure] Video %s set to RETRY (num_of_retries=%d)",
                             video_id,
                             video.num_of_retries,
                         )

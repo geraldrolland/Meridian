@@ -10,7 +10,7 @@ The Video Service is the media backbone of MERIDIAN. It runs behind the API Gate
 - Presigned POST upload URL generation with Content-Type enforcement
 - Server-side multipart upload initiation for large files (>100 MB)
 - MinIO bucket notification consumption via Kafka
-- Video status lifecycle management (awaiting upload → queued → processing → generating manifest → completed/failed/DLQ_PENDING)
+- Video status lifecycle management (awaiting upload → queued → processing → generating manifest → completed/failed/retry)
 - Outbox pattern for reliable downstream event dispatch
 - 6 Kafka consumers: notification, retry, processing, failure, manifest_generating, manifest_completed
 - Distributed Redis locks with nested lock pattern (PROCESS + COMMIT)
@@ -262,7 +262,7 @@ The video service runs 6 Kafka consumers on startup, each handling a specific ev
 | `notification_consumer` | `bucketnotifications` | Stores event, sets video to QUEUED, creates outbox |
 | `retry_consumer` | `video.retry` | Resets video to QUEUED, creates outbox |
 | `processing_consumer` | `video.processing` | Sets video status to PROCESSING |
-| `failure_consumer` | `job.failed` / `manifest.failed` | Sets video to FAILED or DLQ_PENDING |
+| `failure_consumer` | `job.failed` / `manifest.failed` | Sets video to FAILED or RETRY |
 | `manifest_generating_consumer` | `manifest.generating` | Sets video to GENERATING_MANIFEST |
 | `manifest_completed_consumer` | `manifest.completed` | Sets video status to COMPLETED |
 
@@ -278,7 +278,7 @@ video_service/
 │   │   ├── notification_consumer.py   # bucketnotifications → QUEUED + Outbox
 │   │   ├── retry_consumer.py          # video.retry → QUEUED + Outbox
 │   │   ├── processing_consumer.py     # video.processing → PROCESSING
-│   │   ├── failure_consumer.py        # job.failed/manifest.failed → FAILED/DLQ_PENDING
+│   │   ├── failure_consumer.py        # job.failed/manifest.failed → FAILED/RETRY
 │   │   ├── manifest_generating_consumer.py  # manifest.generating → GENERATING_MANIFEST
 │   │   └── manifest_completed_consumer.py   # manifest.completed → COMPLETED
 │   ├── database.py            # Async SQLAlchemy engine + session factory

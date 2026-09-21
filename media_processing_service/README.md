@@ -158,8 +158,6 @@ media_processing_service/
 |-------|------------|---------|
 | `video.queued` | 8 | Incoming video events from video service |
 | `bucketnotifications` | 4 | MinIO bucket notification events |
-| `video.DLQ` | 4 | Dead-letter queue for failed events |
-| `video.retry` | 4 | Retry events from dashboard service |
 | `job.completed` | 4 | Published when a job completes processing |
 | `job.failed` | 4 | Published when a job fails processing |
 

@@ -51,7 +51,7 @@ MOCK_VIDEO_STATUS.QUEUED = _FakeEnumMember("QUEUED")
 MOCK_VIDEO_STATUS.PROCESSING = _FakeEnumMember("PROCESSING")
 MOCK_VIDEO_STATUS.COMPLETED = _FakeEnumMember("COMPLETED")
 MOCK_VIDEO_STATUS.FAILED = _FakeEnumMember("FAILED")
-MOCK_VIDEO_STATUS.DLQ_PENDING = _FakeEnumMember("DLQ_PENDING")
+MOCK_VIDEO_STATUS.RETRY = _FakeEnumMember("RETRY")
 
 MOCK_OUTBOX_STATUS = MagicMock(name="OutboxStatus")
 MOCK_OUTBOX_STATUS.PENDING = _FakeEnumMember("PENDING")
@@ -210,7 +210,7 @@ class TestProcessNotifications:
 
         assert mock_video.size == 4096
 
-    def test_creates_outbox_entry(self, _mock_heavy_deps):
+    def test_does_not_create_outbox_entry(self, _mock_heavy_deps):
         from app.tasks import process_notifications
         import app.tasks as tasks_mod
 
@@ -227,10 +227,8 @@ class TestProcessNotifications:
 
         process_notifications()
 
-        mock_session.add.assert_called_once()
-        assert MOCK_OUTBOX_CLASS.call_args[1]["topic"] == "video.queued"
-        assert MOCK_OUTBOX_CLASS.call_args[1]["payload"]["video_id"] == "video-123"
-        assert MOCK_OUTBOX_CLASS.call_args[1]["payload"]["origin_service"] == "video-service"
+        mock_session.add.assert_not_called()
+        assert mock_video.status == "QUEUED"
 
     def test_acquires_process_and_commit_locks(self, _mock_heavy_deps):
         from app.tasks import process_notifications
@@ -317,82 +315,6 @@ class TestProcessNotifications:
         assert mock_notif.retry_after is None
         assert mock_notif.status == "FAILED"
         assert mock_video.status == "FAILED"
-
-
-class TestProcessFailedVideos:
-    def test_creates_dlq_outbox_entry(self, _mock_heavy_deps):
-        from app.tasks import process_failed_videos
-        import app.tasks as tasks_mod
-
-        mock_video = _make_mock_video(status="DLQ_PENDING")
-
-        mock_session = _make_mock_session({
-            (tasks_mod.Video, "video-123"): mock_video,
-        })
-
-        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_video]
-
-        result = process_failed_videos()
-
-        mock_session.add.assert_called_once()
-        assert MOCK_OUTBOX_CLASS.call_args[1]["topic"] == "video.DLQ"
-        payload = MOCK_OUTBOX_CLASS.call_args[1]["payload"]
-        assert payload["origin_service"] == "video-service"
-        assert payload["video_id"] == "video-123"
-        assert payload["user_id"] == 1
-        assert payload["filename"] == "test.mp4"
-        assert payload["reason"] == "processing_failed"
-        assert result["processed"] == 1
-
-    def test_sets_video_status_to_failed(self, _mock_heavy_deps):
-        from app.tasks import process_failed_videos
-        import app.tasks as tasks_mod
-
-        mock_video = _make_mock_video(status="DLQ_PENDING")
-
-        mock_session = _make_mock_session({
-            (tasks_mod.Video, "video-123"): mock_video,
-        })
-
-        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_video]
-
-        process_failed_videos()
-
-        assert mock_video.status == "FAILED"
-
-    def test_returns_zero_when_no_dlq_pending(self, _mock_heavy_deps):
-        from app.tasks import process_failed_videos
-        import app.tasks as tasks_mod
-
-        mock_session = MagicMock(name="session")
-        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = []
-
-        result = process_failed_videos()
-
-        assert result == {"processed": 0}
-
-    def test_skips_when_lock_not_acquired(self, _mock_heavy_deps):
-        from app.tasks import process_failed_videos
-        import app.tasks as tasks_mod
-
-        mock_video = _make_mock_video(status="DLQ_PENDING")
-
-        mock_session = _make_mock_session({
-            (tasks_mod.Video, "video-123"): mock_video,
-        })
-
-        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_video]
-
-        tasks_mod.acquire_lock = MagicMock(return_value=None)
-
-        result = process_failed_videos()
-
-        assert result["processed"] == 0
-        mock_session.add.assert_not_called()
 
 
 class TestProcessOutboxEvents:

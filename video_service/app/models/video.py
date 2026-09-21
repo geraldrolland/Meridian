@@ -15,7 +15,7 @@ class VideoStatus(str, Enum):
     GENERATING_MANIFEST = "GENERATING_MANIFEST"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
-    DLQ_PENDING = "DLQ_PENDING"
+    RETRY = "RETRY"
 
 
 class UploadRequest(BaseModel):

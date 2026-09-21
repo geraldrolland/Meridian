@@ -24,7 +24,6 @@ celery_app.conf.update(
         "app.tasks.process_notifications": {"queue": "video"},
         "app.tasks.process_queued_videos": {"queue": "video"},
         "app.tasks.process_outbox_events": {"queue": "video"},
-        "app.tasks.process_failed_videos": {"queue": "video"},
     },
 )
 
@@ -42,11 +41,6 @@ celery_app.conf.beat_schedule = {
     "process-outbox-every-10-seconds": {
         "task": "app.tasks.process_outbox_events",
         "schedule": 10.0,
-        "options": {"queue": "video"},
-    },
-    "process-failed-videos-every-15-seconds": {
-        "task": "app.tasks.process_failed_videos",
-        "schedule": 15.0,
         "options": {"queue": "video"},
     },
 }

@@ -15,7 +15,7 @@ class TestVideoStatusEnum:
         assert VideoStatus.QUEUED.value == "QUEUED"
 
     def test_all_statuses(self):
-        expected = {"AWAITING_UPLOAD", "QUEUED", "PROCESSING", "GENERATING_MANIFEST", "COMPLETED", "FAILED", "DLQ_PENDING"}
+        expected = {"AWAITING_UPLOAD", "QUEUED", "PROCESSING", "GENERATING_MANIFEST", "COMPLETED", "FAILED", "RETRY"}
         actual = {s.value for s in VideoStatus}
         assert actual == expected
 

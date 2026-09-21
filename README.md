@@ -144,6 +144,7 @@ Manages video upload, storage, and the async processing lifecycle. Built with Fa
 | POST | /api/video/upload | Create video + generate upload data | Yes |
 | POST | /api/video/{id}/upload/complete | Finalize multipart upload | Yes |
 | POST | /api/video/{id}/upload/abort | Discard multipart upload | Yes |
+| POST | /api/video/{id}/retry | Retry a video in RETRY status | Yes |
 | WS | /ws/video/{user_id}?token=<jwt> | WebSocket for real-time updates | Yes (JWT + HMAC) |
 | GET | /ready | Database readiness probe | No |
 
@@ -193,7 +194,7 @@ Supported extensions: `mp4`, `mov`, `avi`, `mkv`, `webm`, `flv`, `wmv`
 AWAITING_UPLOAD --> QUEUED --> PROCESSING --> GENERATING_MANIFEST --> COMPLETED
                         |           |              |
                         |           +--> FAILED <--+
-                        +--> DLQ_PENDING (dead-letter queue)
+                        +--> RETRY (retries up to 5 times)
 ```
 
 **Transactional Outbox Pattern:**

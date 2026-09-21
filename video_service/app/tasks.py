@@ -301,7 +301,7 @@ def process_outbox_events():
                             if video_id:
                                 video = session.get(Video, video_id)
                                 if video:
-                                    video.status = VideoStatus.DLQ_PENDING.value
+                                    video.status = VideoStatus.RETRY.value
                         else:
                             outbox.retry_count = new_count
                             outbox.retry_after = datetime.now(timezone.utc) + timedelta(minutes=2)
@@ -316,92 +316,6 @@ def process_outbox_events():
                 release_lock(process_lock)
 
         return {"processed": processed, "total_pending": len(pending)}
-
-    finally:
-        session.close()
-
-
-@celery_app.task(
-    name="app.tasks.process_failed_videos",
-    acks_late=True,
-    reject_on_worker_lost=True,
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_backoff_max=60,
-    retry_jitter=True,
-    max_retries=5,
-    default_retry_delay=60,
-)
-def process_failed_videos():
-    """Query DLQ_PENDING videos and create outbox events for video.DLQ topic.
-
-    For each video:
-    1. Acquire PROCESS lock
-    2. Create Outbox entry for video.DLQ topic
-    3. Set status=FAILED
-    4. Acquire COMMIT lock, commit, release COMMIT lock
-    5. Release PROCESS lock
-    """
-    session = get_sync_session()
-    try:
-        videos = (
-            session.query(Video)
-            .filter(Video.status == VideoStatus.DLQ_PENDING.value)
-            .limit(BATCH_SIZE)
-            .all()
-        )
-
-        if not videos:
-            return {"processed": 0}
-
-        processed = 0
-
-        for video in videos:
-            process_lock = acquire_lock(LockState.PROCESS, video.id)
-            if process_lock is None:
-                continue
-
-            commit_lock = None
-            try:
-                v = session.get(Video, video.id)
-                if v is None or v.status != VideoStatus.DLQ_PENDING.value:
-                    continue
-
-                dlq_payload = {
-                    "origin_service": "video-service",
-                    "video_id": v.id,
-                    "user_id": v.user_id,
-                    "filename": v.filename,
-                    "reason": "processing_failed",
-                }
-
-                outbox = Outbox(
-                    topic="video.DLQ",
-                    video_id=v.id,
-                    payload=dlq_payload,
-                )
-                session.add(outbox)
-
-                v.status = VideoStatus.FAILED.value
-
-                commit_lock = acquire_lock(LockState.COMMIT, video.id)
-                session.commit()
-                processed += 1
-
-                logger.info("Created DLQ outbox event for video %s", v.id)
-
-            except Exception:
-                session.rollback()
-                logger.exception(
-                    "Error processing DLQ video %s", video.id
-                )
-                raise
-            finally:
-                if commit_lock:
-                    release_lock(commit_lock)
-                release_lock(process_lock)
-
-        return {"processed": processed, "total_pending": len(videos)}
 
     finally:
         session.close()
