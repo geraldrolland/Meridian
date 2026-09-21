@@ -47,7 +47,7 @@ async def consume_failure_messages(consumer: AIOKafkaConsumer) -> None:
                             "[failure] Video %s not found, skipping",
                             video_id,
                         )
-                    elif video.num_of_retries + 1 > 5:
+                    elif video.num_of_retries + 1 > settings.video_max_retry:
                         video.status = VideoStatus.FAILED.value
                         await session.commit()
                         logger.info(

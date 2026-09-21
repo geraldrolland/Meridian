@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     default_part_size: int = 5 * 1024 * 1024      # 5MB -- chunk size for each part
     outbox_max_retry: int = 5
     bucketnotification_max_retry: int = 5
+    video_max_retry: int = 5
     log_level: str = "info"
 
     @property
