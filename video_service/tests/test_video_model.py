@@ -57,6 +57,14 @@ class TestVideoModel:
         video = Video(filename="test.mp4", num_of_retries=3)
         assert video.num_of_retries == 3
 
+    def test_published_defaults_to_false(self):
+        video = Video(filename="test.mp4")
+        assert video.published is False
+
+    def test_published_can_be_set(self):
+        video = Video(filename="test.mp4", published=True)
+        assert video.published is True
+
 
 class TestUploadRequestModel:
     def test_upload_request_schema(self):

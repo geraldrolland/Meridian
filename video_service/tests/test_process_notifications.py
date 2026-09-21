@@ -146,12 +146,14 @@ def _make_mock_notification(notification_id="notif-1", video_id="video-123", siz
     return mock_notif
 
 
-def _make_mock_video(video_id="video-123", status="AWAITING_UPLOAD"):
+def _make_mock_video(video_id="video-123", status="AWAITING_UPLOAD", published=False):
     mock_video = MagicMock(name="video_record")
     mock_video.id = video_id
     mock_video.user_id = 1
     mock_video.filename = "test.mp4"
     mock_video.status = _FakeEnumMember(status)
+    mock_video.published = published
+    mock_video.video_url = "http://minio/test.mp4"
     return mock_video
 
 
@@ -402,3 +404,134 @@ class TestProcessOutboxEvents:
 
         assert result["processed"] == 0
         tasks_mod.kafka_producer.publish.assert_not_called()
+
+    def test_retry_exhausted_sets_outbox_failed_and_video_retry(self, _mock_heavy_deps):
+        from app.tasks import process_outbox_events
+        import app.tasks as tasks_mod
+
+        mock_video = _make_mock_video(status="PROCESSING")
+        mock_outbox = MagicMock(name="outbox_record")
+        mock_outbox.id = "outbox-1"
+        mock_outbox.status = _FakeEnumMember("PENDING")
+        mock_outbox.topic = "video.queued"
+        mock_outbox.payload = {"video_id": "video-123"}
+        mock_outbox.retry_count = 4
+        mock_outbox.retry_after = None
+
+        mock_session = _make_mock_session({
+            (tasks_mod.Outbox, "outbox-1"): mock_outbox,
+            (tasks_mod.Video, "video-123"): mock_video,
+        })
+
+        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
+        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_outbox]
+
+        tasks_mod.kafka_producer = MagicMock()
+        tasks_mod.kafka_producer.publish.side_effect = Exception("kafka down")
+
+        process_outbox_events()
+
+        assert mock_outbox.status == "FAILED"
+        assert mock_outbox.retry_count == 5
+        assert mock_video.status == "RETRY"
+
+
+class TestProcessQueuedVideos:
+    def test_sets_published_true_and_creates_outbox(self, _mock_heavy_deps):
+        from app.tasks import process_queued_videos
+        import app.tasks as tasks_mod
+
+        mock_video = _make_mock_video(status="QUEUED", published=False)
+
+        mock_session = _make_mock_session({
+            (tasks_mod.Video, "video-123"): mock_video,
+        })
+
+        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
+        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_video]
+
+        result = process_queued_videos()
+
+        assert mock_video.published is True
+        mock_session.add.assert_called_once()
+        assert result["processed"] == 1
+
+    def test_outbox_has_correct_topic_and_payload(self, _mock_heavy_deps):
+        from app.tasks import process_queued_videos
+        import app.tasks as tasks_mod
+
+        mock_video = _make_mock_video(status="QUEUED", published=False)
+        mock_video.video_url = "http://minio/viduploads/test.mp4"
+
+        mock_session = _make_mock_session({
+            (tasks_mod.Video, "video-123"): mock_video,
+        })
+
+        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
+        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_video]
+
+        MOCK_OUTBOX_CLASS.reset_mock()
+
+        process_queued_videos()
+
+        mock_session.add.assert_called_once()
+        call_kwargs = MOCK_OUTBOX_CLASS.call_args[1]
+        assert call_kwargs["topic"] == "video.queued"
+        assert call_kwargs["payload"]["origin_service"] == "video-service"
+        assert call_kwargs["payload"]["video_id"] == "video-123"
+        assert call_kwargs["payload"]["object_url"] == "http://minio/viduploads/test.mp4"
+
+    def test_returns_zero_when_no_queued_unpublished(self, _mock_heavy_deps):
+        from app.tasks import process_queued_videos
+        import app.tasks as tasks_mod
+
+        mock_session = MagicMock(name="session")
+        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
+        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = []
+
+        result = process_queued_videos()
+
+        assert result == {"processed": 0}
+
+    def test_skips_when_lock_not_acquired(self, _mock_heavy_deps):
+        from app.tasks import process_queued_videos
+        import app.tasks as tasks_mod
+
+        mock_video = _make_mock_video(status="QUEUED", published=False)
+
+        mock_session = _make_mock_session({
+            (tasks_mod.Video, "video-123"): mock_video,
+        })
+
+        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
+        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_video]
+
+        tasks_mod.acquire_lock = MagicMock(return_value=None)
+
+        result = process_queued_videos()
+
+        assert result["processed"] == 0
+        mock_session.add.assert_not_called()
+
+    def test_acquires_process_and_commit_locks(self, _mock_heavy_deps):
+        from app.tasks import process_queued_videos
+        import app.tasks as tasks_mod
+
+        mock_video = _make_mock_video(status="QUEUED", published=False)
+
+        mock_session = _make_mock_session({
+            (tasks_mod.Video, "video-123"): mock_video,
+        })
+
+        tasks_mod.get_sync_session = MagicMock(return_value=mock_session)
+        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_video]
+
+        tasks_mod.acquire_lock = MagicMock(return_value=MagicMock())
+        tasks_mod.release_lock = MagicMock()
+
+        process_queued_videos()
+
+        assert tasks_mod.acquire_lock.call_count == 2
+        tasks_mod.acquire_lock.assert_any_call(MOCK_LOCK_STATE.PROCESS, "video-123")
+        tasks_mod.acquire_lock.assert_any_call(MOCK_LOCK_STATE.COMMIT, "video-123")
+        assert tasks_mod.release_lock.call_count == 2

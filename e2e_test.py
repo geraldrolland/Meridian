@@ -646,7 +646,8 @@ r = requests.post(
 _assert(r.status_code == 200, f"status=200 (got {r.status_code})")
 _assert(r.json()["status"] == "QUEUED", f"status=QUEUED (got {r.json()['status']})")
 _assert(r.json()["published"] is False, "published=false")
-print(f"  Retry succeeded: status={r.json()['status']}, published={r.json()['published']}")
+_assert(r.json()["num_of_retries"] == 3, f"num_of_retries=3 (got {r.json()['num_of_retries']})")
+print(f"  Retry succeeded: status={r.json()['status']}, published={r.json()['published']}, num_of_retries={r.json()['num_of_retries']}")
 
 
 # ── Step 21d: GET video → confirm QUEUED ──────────────────────────

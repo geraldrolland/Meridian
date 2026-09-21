@@ -79,6 +79,7 @@ async def retry_video(
 
     video.status = VideoStatus.QUEUED.value
     video.published = False
+    video.num_of_retries += 1
     await session.commit()
 
     logger.info("Video %s retried — status=QUEUED, published=false", video_id)
