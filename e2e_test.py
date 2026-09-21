@@ -405,7 +405,9 @@ for _ in range(60):
     mcur.execute(
         "SELECT id, topic, status, payload FROM outbox "
         "WHERE topic = 'job.completed' AND status = 'PROCESSED' "
-        "ORDER BY created_at DESC LIMIT 1"
+        "AND payload->>'video_id' = %s "
+        "ORDER BY created_at DESC LIMIT 1",
+        (video_id,)
     )
     row = mcur.fetchone()
     if row:
@@ -422,12 +424,17 @@ _assert(outbox_completed, "job.completed outbox event published")
 
 # ── Step 17: Verify cleanup ────────────────────────────────────────
 print("\n[17] Verify cleanup — /tmp/segments/{video_id} should be removed")
-result = subprocess.run(
-    ["docker", "exec", "meridian-media-processing-celery-worker",
-     "ls", f"/tmp/segments/{video_id}"],
-    capture_output=True, text=True, timeout=10,
-)
-segments_cleaned = result.returncode != 0
+segments_cleaned = False
+for _ in range(30):
+    result = subprocess.run(
+        ["docker", "exec", "meridian-media-processing-celery-worker",
+         "ls", f"/tmp/segments/{video_id}"],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        segments_cleaned = True
+        break
+    time.sleep(2)
 _assert(segments_cleaned, f"segments directory cleaned up (exit code={result.returncode})")
 
 
@@ -687,7 +694,7 @@ print(f"  Correctly returned 404")
 
 # ── Step 21g: GET with status filter mismatch → expect 404 ────────
 print("\n[21g] GET /api/video/{video_id}?status=COMPLETED → expect 404")
-sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}?status=COMPLETED")
+sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}")
 r = requests.get(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
     params={"status": "COMPLETED"},

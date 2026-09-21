@@ -43,6 +43,7 @@ def _video_response(video: Video) -> dict:
         "status": video.status,
         "user_id": video.user_id,
         "published": video.published,
+        "num_of_retries": video.num_of_retries,
         "created_at": video.created_at.isoformat(),
     }
 
