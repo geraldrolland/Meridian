@@ -42,6 +42,7 @@ video.queued event
 │     Download video from MinIO       │
 │     Generate thumbnail              │
 │     Segment into 6-second chunks    │
+│     Generate init segments (CMAF)   │
 │     Create TranscodeTasks           │
 │     Status → PROCESSING             │
 └──────────────┬──────────────────────┘
@@ -57,8 +58,8 @@ video.queued event
                ▼
 ┌─────────────────────────────────────┐
 │  4. process_upload_tasks (every 10s)│
-│     Upload transcoded files to MinIO│
-│     vidsegments bucket              │
+│     Upload CMAF .m4s segments to    │
+│     MinIO vidsegments bucket        │
 └──────────────┬──────────────────────┘
                │
                ▼
@@ -108,7 +109,7 @@ media_processing_service/
     ├── consumer.py             # Kafka consumer (video.queued)
     ├── producer.py             # Singleton sync Kafka producer
     ├── lock.py                 # Redis distributed lock (PROCESSING + COMMITTING)
-    ├── utils.py                # build_object_url, resolve_object_key
+    ├── utils.py                # build_object_url, resolve_object_key, get_video_duration
     ├── db_config/
     │   ├── __init__.py         # Re-exports all DB symbols
     │   ├── database.py         # Async engine + session factory
@@ -117,7 +118,8 @@ media_processing_service/
     │   ├── __init__.py         # Re-exports all media utilities
     │   ├── segmentation.py     # FFmpeg video segmentation
     │   ├── thumbnail.py        # FFmpeg thumbnail generation
-    │   ├── transcoder.py       # Multi-rendition transcoding (360p–1080p)
+    │   ├── transcoder.py       # CMAF multi-rendition transcoding (360p–1080p)
+    │   ├── generate_init.py    # CMAF init segment generation (video + audio)
     │   └── cleanup.py          # Singleton MinIO + temp file cleanup
     ├── minio_client/
     │   └── __init__.py         # download, upload, delete (MinIO SDK)
@@ -144,13 +146,13 @@ media_processing_service/
 
 | Task | Schedule | Description |
 |------|----------|-------------|
-| `process_queued_jobs` | Every 15s | Download video, generate thumbnail, segment, create TranscodeTasks |
+| `process_queued_jobs` | Every 15s | Download video, generate thumbnail, segment, generate init segments, create TranscodeTasks |
 | `process_transcode_tasks` | Every 10s | Transcode segments into 360p/480p/720p/1080p |
-| `process_upload_tasks` | Every 10s | Upload transcoded files to MinIO vidsegments bucket |
+| `process_upload_tasks` | Every 10s | Upload CMAF .m4s segments and init files to MinIO vidsegments bucket |
 | `check_completed_jobs` | Every 15s | Check all TranscodeTasks are COMPLETED, mark job COMPLETED |
 | `process_outbox_events` | Every 10s | Publish pending outbox events to Kafka |
 | `process_failed_jobs` | Every 15s | Cleanup failed jobs (MinIO + temp), publish `job.failed` |
-| `process_completed_jobs` | Every 15s | Cleanup completed jobs (temp), publish `job.completed` |
+| `process_completed_jobs` | Every 15s | Extract video duration, cleanup temp files, publish `job.completed` |
 
 ## Kafka Topics
 
@@ -230,6 +232,9 @@ All settings are loaded from environment variables via `pydantic-settings`. Copy
 | `MINIO_THUMBNAIL_BUCKET` | `vidthumbnails` | Bucket for thumbnails |
 | `CELERY_BROKER_URL` | `amqp://guest:guest@rabbitmq:5672//` | RabbitMQ broker |
 | `CELERY_RESULT_BACKEND` | `redis://redis:6379/1` | Redis for Celery results |
+| `SEGMENT_DURATION` | `6` | Segment duration in seconds |
+| `SEGMENT_PREFIX` | `seg_` | Filename prefix for generated segments |
+| `LOG_LEVEL` | `info` | Python logging level |
 
 ## API Endpoints
 

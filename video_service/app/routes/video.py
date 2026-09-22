@@ -1,6 +1,8 @@
+import json
 import logging
 import math
 import os
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.websockets import WebSocket
@@ -53,11 +55,15 @@ async def get_video(
     video_id: str,
     status: VideoStatus | None = Query(None),
     session: AsyncSession = Depends(get_session),
+    user: SessionData | None = Depends(get_user_session),
 ):
     """Get a video by ID with optional status filter."""
     video = await session.get(Video, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    if user is None or video.user_id != user.userId:
+        raise HTTPException(status_code=403, detail="Not authorized to access this video")
 
     if status is not None and video.status != status.value:
         raise HTTPException(status_code=404, detail="Video not found with that status")
@@ -69,11 +75,15 @@ async def get_video(
 async def retry_video(
     video_id: str,
     session: AsyncSession = Depends(get_session),
+    user: SessionData | None = Depends(get_user_session),
 ):
     """Retry a video in RETRY status — sets it back to QUEUED with published=false."""
     video = await session.get(Video, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    if user is None or video.user_id != user.userId:
+        raise HTTPException(status_code=403, detail="Not authorized to access this video")
 
     if video.status != VideoStatus.RETRY.value:
         raise HTTPException(status_code=400, detail="Video is not in RETRY status")
@@ -91,7 +101,7 @@ async def retry_video(
 async def upload_video(
     body: UploadRequest,
     session: AsyncSession = Depends(get_session),
-    user: SessionData | None = Depends(get_user_session),
+    user: SessionData = Depends(get_user_session),
 ):
     """Create a video record and return upload data.
 
@@ -107,7 +117,7 @@ async def upload_video(
 
     video = Video(
         filename=body.filename,
-        user_id=user.userId if user else None,
+        user_id=user.userId,
     )
     session.add(video)
     await session.commit()
@@ -146,11 +156,15 @@ async def complete_upload(
     video_id: str,
     body: CompleteUploadRequest,
     session: AsyncSession = Depends(get_session),
+    user: SessionData | None = Depends(get_user_session),
 ):
     """Complete a multipart upload server-side."""
     video = await session.get(Video, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    if user is None or video.user_id != user.userId:
+        raise HTTPException(status_code=403, detail="Not authorized to access this video")
 
     if video.multipart_upload_id is None:
         raise HTTPException(status_code=400, detail="Video has no multipart upload in progress")
@@ -169,11 +183,15 @@ async def abort_upload(
     video_id: str,
     body: AbortUploadRequest,
     session: AsyncSession = Depends(get_session),
+    user: SessionData | None = Depends(get_user_session),
 ):
     """Abort a multipart upload, discarding all uploaded parts."""
     video = await session.get(Video, video_id)
     if video is None:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    if user is None or video.user_id != user.userId:
+        raise HTTPException(status_code=403, detail="Not authorized to access this video")
 
     if video.multipart_upload_id is None:
         raise HTTPException(status_code=400, detail="Video has no multipart upload in progress")
@@ -188,6 +206,12 @@ async def abort_upload(
     return {"status": video.status}
 
 
-@router.websocket("/ws/video/{user_id}")
-async def video_ws(websocket: WebSocket, user_id: str):
+@router.websocket("/ws/video/notification")
+async def video_ws(websocket: WebSocket):
+    session_cookie = websocket.cookies.get("session")
+    if not session_cookie:
+        await websocket.close(code=4001, reason="Missing session")
+        return
+    session_data = json.loads(unquote(session_cookie))
+    user_id = str(session_data["userId"])
     await ws_video_endpoint(websocket, user_id)

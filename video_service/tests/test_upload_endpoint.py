@@ -104,16 +104,14 @@ class TestUploadEndpoint:
         assert mock_session._captured[0].user_id == 42
 
     @pytest.mark.asyncio
-    async def test_user_id_none_when_no_session(self, _mock_heavy_deps):
+    async def test_raises_error_when_no_session(self, _mock_heavy_deps):
         from app.routes.video import upload_video
 
         mock_session = _make_mock_session()
         body = UploadRequest(filename="test.mp4")
 
-        await upload_video(body=body, session=mock_session, user=None)
-
-        assert len(mock_session._captured) == 1
-        assert mock_session._captured[0].user_id is None
+        with pytest.raises((AttributeError, TypeError)):
+            await upload_video(body=body, session=mock_session, user=None)
 
     @pytest.mark.asyncio
     async def test_returns_201_with_upload_data(self, _mock_heavy_deps):

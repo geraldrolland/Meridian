@@ -106,7 +106,7 @@ async def ws_video_endpoint(websocket: WebSocket, user_id: str) -> None:
     proxy_ts = websocket.headers.get("x-proxy-timestamp")
 
     if proxy_sig and proxy_ts:
-        ws_path = f"/ws/video/{user_id}"
+        ws_path = "/ws/video/notification"
         if not verify_proxy_signature(ws_path, proxy_sig, proxy_ts):
             logger.warning("Invalid proxy signature for WS connection")
             await websocket.close(code=4003, reason="Invalid proxy signature")

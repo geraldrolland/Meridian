@@ -84,7 +84,7 @@ class Video(SQLModel, table=True):
     )
     filename: str = Field(max_length=512)
     size: int | None = Field(default=None, nullable=True)
-    user_id: int | None = Field(default=None, nullable=True)
+    user_id: int = Field(nullable=False)
     status: str = Field(
         default=VideoStatus.AWAITING_UPLOAD.value,
         max_length=32,

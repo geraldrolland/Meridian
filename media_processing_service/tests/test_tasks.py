@@ -104,7 +104,9 @@ class TestProcessQueuedJobs:
 
         assert result == {"processed": 0}
 
+    @patch("app.tasks.process_queued_jobs.resolve_object_key", return_value="vid1/thumb.jpg")
     @patch("app.tasks.process_queued_jobs.build_object_url", return_value="http://minio:9000/vidthumbnails/vid1/thumb.jpg")
+    @patch("app.tasks.process_queued_jobs.GenerateInit")
     @patch("app.tasks.process_queued_jobs.GenerateThumbnail")
     @patch("app.tasks.process_queued_jobs.Segmentation")
     @patch("app.tasks.process_queued_jobs.upload_object")
@@ -117,7 +119,7 @@ class TestProcessQueuedJobs:
     def test_successful_processing(
         self, mock_get_session, mock_exists, mock_makedirs,
         mock_acquire, mock_release, mock_download, mock_upload,
-        mock_seg, mock_thumb, mock_build_url,
+        mock_seg, mock_thumb, mock_init, mock_build_url, mock_resolve,
     ):
         session = mock_get_session.return_value
         job = _make_job()
@@ -129,6 +131,15 @@ class TestProcessQueuedJobs:
         mock_thumb_inst = MagicMock()
         mock_thumb_inst.generate_thumbnail.return_value = "/tmp/thumbnails/vid1/thumb.jpg"
         mock_thumb.return_value = mock_thumb_inst
+
+        mock_init_inst = MagicMock()
+        mock_init_inst.generate_init_file.return_value = [
+            "/tmp/transcoded/vid1/360p/init.mp4",
+            "/tmp/transcoded/vid1/480p/init.mp4",
+            "/tmp/transcoded/vid1/720p/init.mp4",
+            "/tmp/transcoded/vid1/1080p/init.mp4",
+        ]
+        mock_init.return_value = mock_init_inst
 
         mock_seg_inst = MagicMock()
         mock_seg_inst.generate_segments.return_value = [
@@ -144,10 +155,13 @@ class TestProcessQueuedJobs:
         assert job.status == JobStatus.PROCESSING.value
         assert mock_acquire.call_count == 2
         assert mock_release.call_count == 2
+        mock_init_inst.generate_init_file.assert_called_once()
         session.add.assert_called()
         session.commit.assert_called()
 
+    @patch("app.tasks.process_queued_jobs.resolve_object_key", return_value="vid1/thumb.jpg")
     @patch("app.tasks.process_queued_jobs.build_object_url")
+    @patch("app.tasks.process_queued_jobs.GenerateInit")
     @patch("app.tasks.process_queued_jobs.GenerateThumbnail")
     @patch("app.tasks.process_queued_jobs.Segmentation")
     @patch("app.tasks.process_queued_jobs.upload_object")
@@ -160,7 +174,7 @@ class TestProcessQueuedJobs:
     def test_retry_on_failure(
         self, mock_get_session, mock_exists, mock_makedirs,
         mock_acquire, mock_release, mock_download, mock_upload,
-        mock_seg, mock_thumb, mock_build_url,
+        mock_seg, mock_thumb, mock_init, mock_build_url, mock_resolve,
     ):
         session = mock_get_session.return_value
         job = _make_job(retries=0)
@@ -197,16 +211,13 @@ class TestProcessTranscodeTasks:
         assert result == {"processed": 0}
         session.close.assert_called_once()
 
-    @patch("app.tasks.process_transcode_tasks.open", new_callable=MagicMock)
-    @patch("app.tasks.process_transcode_tasks.os.makedirs")
-    @patch("app.tasks.process_transcode_tasks.os.getcwd", return_value="/app")
     @patch("app.tasks.process_transcode_tasks.release_lock")
     @patch("app.tasks.process_transcode_tasks.acquire_lock")
     @patch("app.tasks.process_transcode_tasks.MediaTranscoder")
     @patch("app.tasks.process_transcode_tasks.get_sync_session")
     def test_successful_transcode(
         self, mock_get_session, mock_transcoder, mock_acquire,
-        mock_release, mock_getcwd, mock_makedirs, mock_open,
+        mock_release,
     ):
         session = mock_get_session.return_value
         task = _make_transcode_task()
@@ -221,12 +232,13 @@ class TestProcessTranscodeTasks:
         mock_acquire.return_value = mock_lock
 
         mock_transcoder_inst = MagicMock()
-        mock_transcoder_inst.run_transcoder.return_value = {
-            "720p": b"\x00" * 100,
-            "480p": b"\x00" * 50,
-            "360p": b"\x00" * 30,
-            "1080p": b"\x00" * 200,
-        }
+        mock_transcoder_inst.run_transcoder.return_value = [
+            "/app/vid_transcoded/vid1/360p/video.m4s",
+            "/app/vid_transcoded/vid1/480p/video.m4s",
+            "/app/vid_transcoded/vid1/720p/video.m4s",
+            "/app/vid_transcoded/vid1/1080p/video.m4s",
+            "/app/vid_transcoded/vid1/audio/video.m4s",
+        ]
         mock_transcoder.return_value = mock_transcoder_inst
 
         from app.tasks.process_transcode_tasks import process_transcode_tasks
@@ -234,6 +246,7 @@ class TestProcessTranscodeTasks:
 
         assert result["processed"] == 1
         assert task.status == TranscodeTaskStatus.PROCESSING.value
+        mock_transcoder_inst.run_transcoder.assert_called_once()
         session.add.assert_called()
         session.commit.assert_called()
 
@@ -620,6 +633,7 @@ class TestProcessCompletedJobs:
         assert result == {"processed": 0}
         session.close.assert_called_once()
 
+    @patch("app.tasks.process_completed_jobs.get_video_duration", return_value=120.5)
     @patch("app.tasks.process_completed_jobs.build_object_url", return_value="http://minio:9000/vidsegments/vid1/720p/seg_001.mp4")
     @patch("app.tasks.process_completed_jobs.resolve_object_key", return_value="vid1/720p/seg_001.mp4")
     @patch("app.tasks.process_completed_jobs.MediaCleanup")
@@ -628,7 +642,7 @@ class TestProcessCompletedJobs:
     @patch("app.tasks.process_completed_jobs.get_sync_session")
     def test_successful_publish(
         self, mock_get_session, mock_acquire, mock_release,
-        mock_cleanup_cls, mock_resolve, mock_build_url,
+        mock_cleanup_cls, mock_resolve, mock_build_url, mock_get_duration,
     ):
         session = mock_get_session.return_value
         job = _make_job(status=JobStatus.COMPLETED, published=False)
@@ -670,6 +684,14 @@ class TestProcessCompletedJobs:
         session.add.assert_called()
         session.commit.assert_called()
 
+        added_outbox = session.add.call_args_list[0][0][0]
+        assert added_outbox.topic == "job.completed"
+        assert "manifest_metadata" in added_outbox.payload
+        assert added_outbox.payload["manifest_metadata"]["manifest_type"] == "static"
+        assert added_outbox.payload["manifest_metadata"]["video_duration"] == 120.5
+        mock_get_duration.assert_called_once()
+
+    @patch("app.tasks.process_completed_jobs.get_video_duration", return_value=120.5)
     @patch("app.tasks.process_completed_jobs.build_object_url", return_value="http://minio:9000/vidsegments/vid1/720p/seg_001.mp4")
     @patch("app.tasks.process_completed_jobs.resolve_object_key", return_value="vid1/720p/seg_001.mp4")
     @patch("app.tasks.process_completed_jobs.MediaCleanup")
@@ -678,7 +700,7 @@ class TestProcessCompletedJobs:
     @patch("app.tasks.process_completed_jobs.get_sync_session")
     def test_segment_urls_collected(
         self, mock_get_session, mock_acquire, mock_release,
-        mock_cleanup_cls, mock_resolve, mock_build_url,
+        mock_cleanup_cls, mock_resolve, mock_build_url, mock_get_duration,
     ):
         session = mock_get_session.return_value
         job = _make_job(status=JobStatus.COMPLETED, published=False)
@@ -719,7 +741,8 @@ class TestProcessCompletedJobs:
 
         added_outbox = session.add.call_args_list[0][0][0]
         assert added_outbox.topic == "job.completed"
-        assert "segments_object_urls" in added_outbox.payload
-        assert "thumbnail_url" in added_outbox.payload
+        assert added_outbox.payload["video_id"] == job.video_id
+        assert added_outbox.payload["job_id"] == job.id
         assert added_outbox.payload["thumbnail_url"] == job.vid_thumbnail_url
-        assert len(added_outbox.payload["segments_object_urls"]) == 1
+        assert "manifest_metadata" in added_outbox.payload
+        assert added_outbox.payload["manifest_metadata"]["video_duration"] == 120.5

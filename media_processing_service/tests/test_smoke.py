@@ -100,7 +100,8 @@ class TestImports:
         assert Outbox is not None
 
     def test_utils_importable(self):
-        from app.utils import build_object_url, resolve_object_key
+        from app.utils import build_object_url, resolve_object_key, get_video_duration
 
         assert callable(build_object_url)
         assert callable(resolve_object_key)
+        assert callable(get_video_duration)

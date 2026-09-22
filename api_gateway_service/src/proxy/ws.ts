@@ -26,20 +26,15 @@ function createWsProxy(server: http.Server): void {
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
 
-    // Match /ws/dashboard/{user_id}
-    const dashboardMatch = url.pathname.match(/^\/ws\/dashboard\/([^/]+)$/);
-    // Match /ws/video/{user_id}
-    const videoMatch = url.pathname.match(/^\/ws\/video\/([^/]+)$/);
+    const videoMatch = url.pathname.match(/^\/ws\/video\/notification$/);
 
-    const match = dashboardMatch || videoMatch;
-    if (!match) {
+    if (!videoMatch) {
       socket.destroy();
       return;
     }
 
-    const userId = match[1];
-    const token = url.searchParams.get('token');
-    const isVideoWs = !!videoMatch;
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
     if (!token) {
       wss.handleUpgrade(req, socket, head, (ws) => {
@@ -76,26 +71,12 @@ function createWsProxy(server: http.Server): void {
 
         const session: SessionData = JSON.parse(sessionRaw);
 
-        if (session.userId !== userId) {
-          wss.handleUpgrade(req, socket, head, (ws) => {
-            ws.close(4003, 'User ID mismatch');
-          });
-          return;
-        }
-
         wss.handleUpgrade(req, socket, head, (clientWs) => {
-          const wsPath = `/ws/video/${userId}`;
-          const { signature, timestamp } = signWsRequest(wsPath);
-
-          const targetService = isVideoWs
-            ? 'ws://video-service:8000'
-            : 'ws://dashboard-service:8002';
-          const targetPath = isVideoWs
-            ? `/ws/video/${userId}`
-            : `/ws/dashboard/${userId}`;
+          const targetPath = '/ws/video/notification';
+          const { signature, timestamp } = signWsRequest(targetPath);
 
           const upstreamWs = new WebSocket(
-            `${targetService}${targetPath}`,
+            `ws://video-service:8000${targetPath}`,
             {
               headers: {
                 'x-proxy-signature': signature,
@@ -105,8 +86,7 @@ function createWsProxy(server: http.Server): void {
           );
 
           upstreamWs.on('open', () => {
-            const serviceName = isVideoWs ? 'video-service' : 'dashboard-service';
-            logger.info('WS proxy connected to %s for user %s', serviceName, userId);
+            logger.info('WS proxy connected to video-service for user %s', session.userId);
 
             clientWs.on('message', (data) => {
               if (upstreamWs.readyState === WebSocket.OPEN) {
@@ -122,21 +102,21 @@ function createWsProxy(server: http.Server): void {
 
             clientWs.on('close', () => {
               upstreamWs.close();
-              logger.info('WS proxy client disconnected for user %s', userId);
+              logger.info('WS proxy client disconnected for user %s', session.userId);
             });
 
             upstreamWs.on('close', () => {
               clientWs.close();
-              logger.info('WS proxy upstream disconnected for user %s', userId);
+              logger.info('WS proxy upstream disconnected for user %s', session.userId);
             });
 
             clientWs.on('error', (err) => {
-              logger.error('WS proxy client error for user %s: %s', userId, err.message);
+              logger.error('WS proxy client error for user %s: %s', session.userId, err.message);
               upstreamWs.close();
             });
 
             upstreamWs.on('error', (err) => {
-              logger.error('WS proxy upstream error for user %s: %s', userId, err.message);
+              logger.error('WS proxy upstream error for user %s: %s', session.userId, err.message);
               clientWs.close();
             });
           });
@@ -153,7 +133,7 @@ function createWsProxy(server: http.Server): void {
       });
   });
 
-  logger.info('WebSocket proxy initialized for /ws/dashboard/* and /ws/video/*');
+  logger.info('WebSocket proxy initialized for /ws/video/notification');
 }
 
 export { createWsProxy };

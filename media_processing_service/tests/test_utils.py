@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from app.utils import build_object_url, resolve_object_key
+from app.utils import build_object_url, resolve_object_key, get_video_duration
 
 
 class TestBuildObjectUrl:
@@ -38,10 +38,10 @@ class TestResolveObjectKey:
 
     def test_standard_path(self):
         result = resolve_object_key(
-            "/app/vid_transcoded/abc/720p/seg_001.mp4",
+            "/app/vid_transcoded/abc/720p/seg_001_a1b2c3d4.m4s",
             "/app/vid_transcoded",
         )
-        assert result == "abc/720p/seg_001.mp4"
+        assert result == "abc/720p/seg_001.m4s"
 
     def test_short_prefix_matches_last_component(self):
         result = resolve_object_key(
@@ -72,3 +72,31 @@ class TestResolveObjectKey:
     def test_prefix_at_end_of_path(self):
         result = resolve_object_key("/app/transcoded/file.mp4", "transcoded")
         assert result == "file.mp4"
+
+    def test_strips_uuid_from_m4s(self):
+        result = resolve_object_key(
+            "/app/vid_transcoded/abc/360p/myvideo_f1e2d3c4.m4s",
+            "/app/vid_transcoded",
+        )
+        assert result == "abc/360p/myvideo.m4s"
+
+    def test_no_uuid_strip_for_non_m4s(self):
+        result = resolve_object_key(
+            "/app/vid_transcoded/abc/720p/seg_001_f1e2d3c4.mp4",
+            "/app/vid_transcoded",
+        )
+        assert result == "abc/720p/seg_001_f1e2d3c4.mp4"
+
+
+class TestGetVideoDuration:
+    """Tests for get_video_duration."""
+
+    @patch("app.utils.ffmpeg.probe")
+    def test_returns_duration(self, mock_probe):
+        mock_probe.return_value = {"format": {"duration": "120.5"}}
+        assert get_video_duration("/tmp/video.mp4") == 120.5
+
+    @patch("app.utils.ffmpeg.probe")
+    def test_integer_duration(self, mock_probe):
+        mock_probe.return_value = {"format": {"duration": "60"}}
+        assert get_video_duration("/tmp/video.mp4") == 60.0

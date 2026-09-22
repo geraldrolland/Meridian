@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.models.session import SessionData
 from app.models.video import Video, VideoStatus
 
 
@@ -67,6 +68,10 @@ def _make_video(
     return v
 
 
+def _make_user(user_id=1, role="user", email="a@b.com"):
+    return SessionData(userId=user_id, role=role, email=email)
+
+
 class TestGetVideo:
     @pytest.mark.asyncio
     async def test_returns_video_when_found(self, _mock_heavy_deps):
@@ -74,8 +79,9 @@ class TestGetVideo:
 
         video = _make_video(status=VideoStatus.COMPLETED.value, published=True)
         session = _make_mock_session(video=video)
+        user = _make_user(user_id=1)
 
-        result = await get_video(video_id="vid-123", status=None, session=session)
+        result = await get_video(video_id="vid-123", status=None, session=session, user=user)
 
         assert result["id"] == "vid-123"
         assert result["status"] == "COMPLETED"
@@ -90,9 +96,10 @@ class TestGetVideo:
         from fastapi import HTTPException
 
         session = _make_mock_session(video=None)
+        user = _make_user(user_id=1)
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_video(video_id="nonexistent", session=session)
+            await get_video(video_id="nonexistent", session=session, user=user)
 
         assert exc_info.value.status_code == 404
         assert "Video not found" in exc_info.value.detail
@@ -104,12 +111,14 @@ class TestGetVideo:
 
         video = _make_video(status=VideoStatus.QUEUED.value)
         session = _make_mock_session(video=video)
+        user = _make_user(user_id=1)
 
         with pytest.raises(HTTPException) as exc_info:
             await get_video(
                 video_id="vid-123",
                 status=VideoStatus.COMPLETED,
                 session=session,
+                user=user,
             )
 
         assert exc_info.value.status_code == 404
@@ -121,14 +130,45 @@ class TestGetVideo:
 
         video = _make_video(status=VideoStatus.QUEUED.value)
         session = _make_mock_session(video=video)
+        user = _make_user(user_id=1)
 
         result = await get_video(
             video_id="vid-123",
             status=VideoStatus.QUEUED,
             session=session,
+            user=user,
         )
 
         assert result["status"] == "QUEUED"
+
+    @pytest.mark.asyncio
+    async def test_returns_403_when_no_session(self, _mock_heavy_deps):
+        from app.routes.video import get_video
+        from fastapi import HTTPException
+
+        video = _make_video(user_id=1)
+        session = _make_mock_session(video=video)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_video(video_id="vid-123", status=None, session=session, user=None)
+
+        assert exc_info.value.status_code == 403
+        assert "Not authorized" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_returns_403_when_user_id_mismatch(self, _mock_heavy_deps):
+        from app.routes.video import get_video
+        from fastapi import HTTPException
+
+        video = _make_video(user_id=1)
+        session = _make_mock_session(video=video)
+        user = _make_user(user_id=99)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_video(video_id="vid-123", status=None, session=session, user=user)
+
+        assert exc_info.value.status_code == 403
+        assert "Not authorized" in exc_info.value.detail
 
 
 class TestRetryVideo:
@@ -140,10 +180,12 @@ class TestRetryVideo:
             status=VideoStatus.RETRY.value,
             published=False,
             num_of_retries=2,
+            user_id=1,
         )
         session = _make_mock_session(video=video)
+        user = _make_user(user_id=1)
 
-        result = await retry_video(video_id="vid-123", session=session)
+        result = await retry_video(video_id="vid-123", session=session, user=user)
 
         assert result["status"] == "QUEUED"
         assert result["published"] is False
@@ -155,11 +197,12 @@ class TestRetryVideo:
         from app.routes.video import retry_video
         from fastapi import HTTPException
 
-        video = _make_video(status=VideoStatus.QUEUED.value)
+        video = _make_video(status=VideoStatus.QUEUED.value, user_id=1)
         session = _make_mock_session(video=video)
+        user = _make_user(user_id=1)
 
         with pytest.raises(HTTPException) as exc_info:
-            await retry_video(video_id="vid-123", session=session)
+            await retry_video(video_id="vid-123", session=session, user=user)
 
         assert exc_info.value.status_code == 400
         assert "not in RETRY status" in exc_info.value.detail
@@ -170,9 +213,39 @@ class TestRetryVideo:
         from fastapi import HTTPException
 
         session = _make_mock_session(video=None)
+        user = _make_user(user_id=1)
 
         with pytest.raises(HTTPException) as exc_info:
-            await retry_video(video_id="nonexistent", session=session)
+            await retry_video(video_id="nonexistent", session=session, user=user)
 
         assert exc_info.value.status_code == 404
         assert "Video not found" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_returns_403_when_no_session(self, _mock_heavy_deps):
+        from app.routes.video import retry_video
+        from fastapi import HTTPException
+
+        video = _make_video(status=VideoStatus.RETRY.value, user_id=1)
+        session = _make_mock_session(video=video)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await retry_video(video_id="vid-123", session=session, user=None)
+
+        assert exc_info.value.status_code == 403
+        assert "Not authorized" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_returns_403_when_user_id_mismatch(self, _mock_heavy_deps):
+        from app.routes.video import retry_video
+        from fastapi import HTTPException
+
+        video = _make_video(status=VideoStatus.RETRY.value, user_id=1)
+        session = _make_mock_session(video=video)
+        user = _make_user(user_id=99)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await retry_video(video_id="vid-123", session=session, user=user)
+
+        assert exc_info.value.status_code == 403
+        assert "Not authorized" in exc_info.value.detail

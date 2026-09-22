@@ -21,8 +21,8 @@ class TestVerifyProxySignature:
         from app.websocket import verify_proxy_signature
 
         ts = str(int(time.time() * 1000))
-        sig = _sign_ws("/ws/video/123", ts)
-        assert verify_proxy_signature("/ws/video/123", sig, ts) is True
+        sig = _sign_ws("/ws/video/notification", ts)
+        assert verify_proxy_signature("/ws/video/notification", sig, ts) is True
 
     @patch("app.websocket.settings")
     def test_expired_timestamp(self, mock_settings):
@@ -30,8 +30,8 @@ class TestVerifyProxySignature:
         from app.websocket import verify_proxy_signature
 
         ts = str(int(time.time() * 1000) - 61_000)
-        sig = _sign_ws("/ws/video/123", ts)
-        assert verify_proxy_signature("/ws/video/123", sig, ts) is False
+        sig = _sign_ws("/ws/video/notification", ts)
+        assert verify_proxy_signature("/ws/video/notification", sig, ts) is False
 
     @patch("app.websocket.settings")
     def test_invalid_signature(self, mock_settings):
@@ -39,21 +39,21 @@ class TestVerifyProxySignature:
         from app.websocket import verify_proxy_signature
 
         ts = str(int(time.time() * 1000))
-        assert verify_proxy_signature("/ws/video/123", "bad-sig", ts) is False
+        assert verify_proxy_signature("/ws/video/notification", "bad-sig", ts) is False
 
     @patch("app.websocket.settings")
     def test_non_numeric_timestamp(self, mock_settings):
         mock_settings.jwt_secret = "test-secret"
         from app.websocket import verify_proxy_signature
 
-        assert verify_proxy_signature("/ws/video/123", "sig", "not-a-number") is False
+        assert verify_proxy_signature("/ws/video/notification", "sig", "not-a-number") is False
 
     @patch("app.websocket.settings")
     def test_none_timestamp(self, mock_settings):
         mock_settings.jwt_secret = "test-secret"
         from app.websocket import verify_proxy_signature
 
-        assert verify_proxy_signature("/ws/video/123", "sig", None) is False
+        assert verify_proxy_signature("/ws/video/notification", "sig", None) is False
 
 
 # ── publish_update ──────────────────────────────────────────────────
@@ -115,7 +115,7 @@ class TestWsVideoEndpoint:
 
         ws = AsyncMock()
         ts = str(int(time.time() * 1000))
-        sig = _sign_ws("/ws/video/42", ts)
+        sig = _sign_ws("/ws/video/notification", ts)
         ws.headers = {"x-proxy-signature": sig, "x-proxy-timestamp": ts}
 
         with patch("app.websocket.settings") as mock_settings:
@@ -143,7 +143,7 @@ class TestWsVideoEndpoint:
 
         ws = AsyncMock()
         ts = str(int(time.time() * 1000))
-        sig = _sign_ws("/ws/video/99", ts)
+        sig = _sign_ws("/ws/video/notification", ts)
         ws.headers = {"x-proxy-signature": sig, "x-proxy-timestamp": ts}
 
         with patch("app.websocket.settings") as mock_settings:

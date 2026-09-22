@@ -423,19 +423,24 @@ _assert(outbox_completed, "job.completed outbox event published")
 
 
 # ── Step 17: Verify cleanup ────────────────────────────────────────
-print("\n[17] Verify cleanup — /tmp/segments/{video_id} should be removed")
-segments_cleaned = False
+print("\n[17] Verify cleanup — /tmp/{segments,transcoded,downloads,thumbnails}/{video_id} should be removed")
+TEMP_DIRS = ["/tmp/segments", "/tmp/transcoded", "/tmp/downloads", "/tmp/thumbnails"]
+all_cleaned = False
 for _ in range(30):
-    result = subprocess.run(
-        ["docker", "exec", "meridian-media-processing-celery-worker",
-         "ls", f"/tmp/segments/{video_id}"],
-        capture_output=True, text=True, timeout=10,
-    )
-    if result.returncode != 0:
-        segments_cleaned = True
+    remaining = []
+    for td in TEMP_DIRS:
+        result = subprocess.run(
+            ["docker", "exec", "meridian-media-processing-celery-worker",
+             "ls", f"{td}/{video_id}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            remaining.append(td)
+    if not remaining:
+        all_cleaned = True
         break
     time.sleep(2)
-_assert(segments_cleaned, f"segments directory cleaned up (exit code={result.returncode})")
+_assert(all_cleaned, f"all temp dirs cleaned for {video_id} (still present: {remaining})")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -446,7 +451,7 @@ FAILED_VIDEO_ID = "failed-e2e-video"
 FAILED_JOB_ID = "job:failed-e2e"
 FAILED_TRANSCODE_ID = "tc-failed-e2e"
 FAILED_UPLOAD_ID = "ut-failed-e2e"
-FAILED_OBJ_KEY = f"{FAILED_VIDEO_ID}/720p/{FAILED_VIDEO_ID}_seg_000.mp4"
+FAILED_OBJ_KEY = f"{FAILED_VIDEO_ID}/720p/seg_1.m4s"
 
 
 # ── Step 19a: Seed FAILED job + video via SQL ──────────────────────
@@ -467,8 +472,21 @@ media_conn.commit()
 mcur.close()
 
 # Also clean up any leftover objects from previous runs
-for obj in mc.list_objects(SEGMENT_BUCKET, prefix=f"{FAILED_VIDEO_ID}/"):
+for obj in mc.list_objects(SEGMENT_BUCKET, prefix=f"{FAILED_VIDEO_ID}/", recursive=True):
     mc.remove_object(SEGMENT_BUCKET, obj.object_name)
+
+# Upload fake object BEFORE seeding the job to avoid race condition
+# with celery worker processing the job before the object exists
+print(f"\n[19a-pre] Upload fake object to {SEGMENT_BUCKET}/{FAILED_OBJ_KEY}")
+import io as _io
+fake_data = b"fake-transcoded-segment"
+mc.put_object(
+    SEGMENT_BUCKET, FAILED_OBJ_KEY,
+    _io.BytesIO(fake_data), length=len(fake_data),
+    content_type="video/mp4",
+)
+objects_before = list(mc.list_objects(SEGMENT_BUCKET, prefix=f"{FAILED_VIDEO_ID}/", recursive=True))
+_assert(len(objects_before) > 0, f"fake object exists in {SEGMENT_BUCKET} before cleanup")
 
 # Insert video with num_of_retries=6 so failure_consumer triggers FAILED path
 vcur = conn.cursor()
@@ -493,31 +511,18 @@ mcur.execute(
 mcur.execute(
     "INSERT INTO transcode_tasks (id, job_id, status, input_file, num_of_processed_uploads, num_of_retries, created_at) "
     "VALUES (%s, %s, %s, %s, %s, %s, NOW()) ON CONFLICT (id) DO NOTHING",
-    (FAILED_TRANSCODE_ID, FAILED_JOB_ID, "COMPLETED", f"/tmp/segments/{FAILED_VIDEO_ID}/seg_000.mp4", 0, 0),
+    (FAILED_TRANSCODE_ID, FAILED_JOB_ID, "COMPLETED", f"/tmp/segments/{FAILED_VIDEO_ID}/seg_1.mp4", 0, 0),
 )
 # Insert completed UploadTask with upload_files pointing to resolved object key
 mcur.execute(
     "INSERT INTO upload_tasks (id, transcode_id, status, upload_files, num_of_retries, created_at) "
     "VALUES (%s, %s, %s, %s, %s, NOW()) ON CONFLICT (id) DO NOTHING",
     (FAILED_UPLOAD_ID, FAILED_TRANSCODE_ID, "completed",
-     json.dumps([f"/tmp/transcoded/{FAILED_VIDEO_ID}/720p/{FAILED_VIDEO_ID}_seg_000.mp4"]), 0),
+     json.dumps([f"/tmp/transcoded/{FAILED_VIDEO_ID}/720p/seg_1.m4s"]), 0),
 )
 media_conn.commit()
 mcur.close()
 print(f"  Inserted job={FAILED_JOB_ID}, transcode={FAILED_TRANSCODE_ID}, upload={FAILED_UPLOAD_ID}")
-
-
-# ── Step 19b: Upload fake object to vidsegments bucket ─────────────
-print(f"\n[19b] Upload fake object to {SEGMENT_BUCKET}/{FAILED_OBJ_KEY}")
-import io as _io
-fake_data = b"fake-transcoded-segment"
-mc.put_object(
-    SEGMENT_BUCKET, FAILED_OBJ_KEY,
-    _io.BytesIO(fake_data), length=len(fake_data),
-    content_type="video/mp4",
-)
-objects_before = list(mc.list_objects(SEGMENT_BUCKET, prefix=f"{FAILED_VIDEO_ID}/"))
-_assert(len(objects_before) > 0, f"fake object exists in {SEGMENT_BUCKET} before cleanup")
 
 
 # ── Step 19c: Poll process_failed_jobs → job.published=True (60s) ──
@@ -562,15 +567,16 @@ _assert(failed_outbox_published, "job.failed outbox event published")
 # ── Step 19e: Verify objects cleaned from vidsegments ──────────────
 print(f"\n[19e] Verify objects cleaned from {SEGMENT_BUCKET}/{FAILED_VIDEO_ID}/")
 objects_cleaned = False
-for _ in range(10):
-    objects_after = list(mc.list_objects(SEGMENT_BUCKET, prefix=f"{FAILED_VIDEO_ID}/"))
+for i in range(30):
+    objects_after = list(mc.list_objects(SEGMENT_BUCKET, prefix=f"{FAILED_VIDEO_ID}/", recursive=True))
     if len(objects_after) == 0:
         objects_cleaned = True
         print(f"  All objects cleaned from {SEGMENT_BUCKET}/{FAILED_VIDEO_ID}/")
         break
-    time.sleep(1)
+    print(f"  [{i+1}/30] Still {len(objects_after)} object(s): {[o.object_name for o in objects_after]}")
+    time.sleep(2)
 _assert(objects_cleaned,
-        f"failed job objects cleaned from {SEGMENT_BUCKET} (still {len(objects_after)} objects)")
+        f"failed job objects cleaned from {SEGMENT_BUCKET} (still {len(objects_after)} objects: {[o.object_name for o in objects_after]})")
 
 
 # ── Step 19f: Verify video service received job.failed → video FAILED
@@ -635,7 +641,7 @@ print("\n[21b] GET /api/video/{video_id} → expect status=RETRY")
 sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}")
 r = requests.get(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
-    headers={**sign_headers, "Content-Type": "application/json"},
+    headers={**sign_headers, "Cookie": session_cookie, "Content-Type": "application/json"},
 )
 _assert(r.status_code == 200, f"status=200 (got {r.status_code})")
 _assert(r.json()["status"] == "RETRY", f"status=RETRY (got {r.json()['status']})")
@@ -648,7 +654,7 @@ print("\n[21c] POST /api/video/{video_id}/retry → expect 200 + status=QUEUED")
 sign_headers = _proxy_sign("POST", f"/api/video/{RETRY_VIDEO_ID}/retry")
 r = requests.post(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}/retry",
-    headers={**sign_headers, "Content-Type": "application/json"},
+    headers={**sign_headers, "Cookie": session_cookie, "Content-Type": "application/json"},
 )
 _assert(r.status_code == 200, f"status=200 (got {r.status_code})")
 _assert(r.json()["status"] == "QUEUED", f"status=QUEUED (got {r.json()['status']})")
@@ -662,7 +668,7 @@ print("\n[21d] GET /api/video/{video_id} → confirm status=QUEUED")
 sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}")
 r = requests.get(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
-    headers={**sign_headers, "Content-Type": "application/json"},
+    headers={**sign_headers, "Cookie": session_cookie, "Content-Type": "application/json"},
 )
 _assert(r.status_code == 200, f"status=200 (got {r.status_code})")
 _assert(r.json()["status"] == "QUEUED", f"status=QUEUED (got {r.json()['status']})")
@@ -674,7 +680,7 @@ print("\n[21e] POST /api/video/{video_id}/retry (already QUEUED) → expect 400"
 sign_headers = _proxy_sign("POST", f"/api/video/{RETRY_VIDEO_ID}/retry")
 r = requests.post(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}/retry",
-    headers={**sign_headers, "Content-Type": "application/json"},
+    headers={**sign_headers, "Cookie": session_cookie, "Content-Type": "application/json"},
 )
 _assert(r.status_code == 400, f"status=400 (got {r.status_code})")
 _assert("not in RETRY" in r.json()["detail"], f"error mentions RETRY (got {r.json()['detail']})")
@@ -686,7 +692,7 @@ print("\n[21f] POST /api/video/nonexistent/retry → expect 404")
 sign_headers = _proxy_sign("POST", "/api/video/nonexistent/retry")
 r = requests.post(
     f"{VIDEO_SERVICE}/api/video/nonexistent/retry",
-    headers={**sign_headers, "Content-Type": "application/json"},
+    headers={**sign_headers, "Cookie": session_cookie, "Content-Type": "application/json"},
 )
 _assert(r.status_code == 404, f"status=404 (got {r.status_code})")
 print(f"  Correctly returned 404")
@@ -698,7 +704,7 @@ sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}")
 r = requests.get(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
     params={"status": "COMPLETED"},
-    headers={**sign_headers, "Content-Type": "application/json"},
+    headers={**sign_headers, "Cookie": session_cookie, "Content-Type": "application/json"},
 )
 _assert(r.status_code == 404, f"status=404 (got {r.status_code})")
 print(f"  Status filter correctly rejected mismatch")
