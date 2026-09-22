@@ -63,10 +63,11 @@ The Token Bucket implementation uses an atomic Lua script executed in Redis, han
 The gateway proxies WebSocket connections to upstream services:
 
 ```
-ws://localhost:3001/ws/video/<user_id>?token=<token>
+ws://localhost:3001/ws/video/notification
+Authorization: Bearer <jwt>
 ```
 
-The gateway validates the JWT token from the query parameter, verifies the session in Redis, then forwards the connection to the Video Service with HMAC-signed upgrade headers.
+The gateway validates the JWT token from the `Authorization: Bearer` header, verifies the session in Redis, then forwards the connection to the Video Service at `/ws/video/notification` with HMAC-signed upgrade headers.
 
 **Route Configuration:**
 
@@ -145,7 +146,7 @@ Manages video upload, storage, and the async processing lifecycle. Built with Fa
 | POST | /api/video/{id}/upload/complete | Finalize multipart upload | Yes |
 | POST | /api/video/{id}/upload/abort | Discard multipart upload | Yes |
 | POST | /api/video/{id}/retry | Retry a video in RETRY status | Yes |
-| WS | /ws/video/{user_id}?token=<jwt> | WebSocket for real-time updates | Yes (JWT + HMAC) |
+| WS | /ws/video/notification | WebSocket for real-time updates | Yes (Bearer JWT + HMAC) |
 | GET | /ready | Database readiness probe | No |
 
 **Upload Flow:**
@@ -213,8 +214,8 @@ Ensures reliable event publishing to Kafka even during broker outages:
 ```
 Client (Browser)              API Gateway               Video Service
       |                            |                           |
-      |-- WS /ws/video/uid ------>|-- HMAC signed upgrade --->|
-      |   ?token=<jwt>             |   + JWT validation       |
+      |-- WS /ws/video/notification->-- HMAC signed upgrade --->|
+      |   Authorization: Bearer jwt |   + JWT + Redis session  |
       |                            |                           |-- accept()
       |<--- Connection established -|                           |-- register in dict
       |                            |                           |

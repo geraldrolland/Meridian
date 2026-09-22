@@ -7,6 +7,7 @@ A production-grade reverse proxy API gateway built with Express, TypeScript, and
 The API Gateway sits in front of your backend services and provides:
 
 - **Reverse Proxy** — routes requests to upstream services based on configurable path prefixes
+- **WebSocket Proxy** — proxies WebSocket connections with JWT + Redis session validation
 - **JWT Authentication** — validates Bearer tokens and enforces session-based auth via Redis
 - **Rate Limiting** — per-route rate limiting with fixed window or token bucket strategies
 - **CORS** — configurable cross-origin resource sharing
@@ -25,13 +26,13 @@ The API Gateway sits in front of your backend services and provides:
                                    │
 ┌──────────┐    ┌─────────────┐    │    ┌──────────────┐
 │  Client  │───▶│ API Gateway │────┼───▶│ User Service │
-└──────────┘    │  (port 3000)│    │    └──────────────┘
-                └──────┬──────┘    │
+│ (HTTP)   │    │  (port 3000)│    │    └──────────────┘
+└──────────┘    └──────┬──────┘    │
                        │           │    ┌──────────────┐
-                       │           └───▶│ Video Service│
-                       │                └──────────────┘
-                       │
-                       │           ┌──────────────┐
+┌──────────┐           │           └───▶│ Video Service│
+│  Client  │───(WS)───┤                └──────────────┘
+│ (Browser)│           │
+└──────────┘           │           ┌──────────────┐
                        └──────────▶│ Auth Service  │
                                    └──────────────┘
 ```
@@ -182,6 +183,31 @@ Capacity: 10, Refill: 2 tokens/sec
 - Upstream services can validate the signature using the shared `PROXY_SECRET`
 - Errors return `502 Bad Gateway`
 
+## WebSocket Proxy
+
+The gateway proxies WebSocket connections to upstream services:
+
+```
+ws://localhost:3000/ws/video/notification
+Authorization: Bearer <jwt>
+```
+
+**Flow:**
+
+1. Client initiates WebSocket upgrade to `/ws/video/notification` with `Authorization: Bearer <jwt>` header
+2. Gateway extracts and verifies the JWT token using `JWT_SECRET`
+3. Gateway looks up the session in Redis (`session:<sessionId>`)
+4. If valid, gateway opens an upstream WebSocket to `ws://video-service:8000/ws/video/notification` with HMAC-signed headers (`x-proxy-signature`, `x-proxy-timestamp`)
+5. Messages are proxied bidirectionally between client and upstream
+6. On disconnect, both sides are cleaned up
+
+**Close Codes:**
+
+| Code | Meaning |
+|------|---------|
+| 4001 | Missing token, invalid token, expired session |
+| 1011 | Backend unavailable (upstream connection error) |
+
 ## Docker
 
 ### With Docker Compose (from repository root)
@@ -237,7 +263,8 @@ src/
 │       ├── tokenBucket.ts    # Token bucket strategy (Lua script)
 │       └── utils.ts          # Shared helpers (identifier, headers)
 ├── proxy/
-│   └── index.ts              # HTTP proxy middleware + HMAC signing
+│   ├── index.ts              # HTTP proxy middleware + HMAC signing
+│   └── ws.ts                 # WebSocket proxy + JWT session auth
 ├── types/
 │   └── index.ts              # TypeScript interfaces
 └── server.ts                 # Express app bootstrap + startup
