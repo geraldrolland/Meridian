@@ -202,8 +202,7 @@ AWAITING_UPLOAD --> QUEUED --> PROCESSING --> GENERATING_MANIFEST --> COMPLETED
 
 Ensures reliable event publishing to Kafka even during broker outages:
 
-1. `process_notifications` processes bucket notification events — on error, the notification and video are marked FAILED immediately (no retry)
-2. `process_queued_videos` polls QUEUED videos with `published=false` in batches of 50, sets `published=true`, and creates an Outbox record in the same DB transaction
+1. `process_queued_videos` polls QUEUED videos with `published=false` in batches of 50, sets `published=true`, and creates an Outbox record in the same DB transaction
 3. A separate Celery beat task (`process_outbox_events`, every 10s) polls PENDING outbox records
 4. Events are published to Kafka with distributed Redis locks to prevent duplicate processing
 5. Failed outbox events are retried up to 5 times with 2-minute backoff intervals
@@ -679,7 +678,7 @@ python -m pytest tests/ -v
 | Middleware (proxy signature + session) | 7 tests |
 | MinIO client (presigned POST) | 2 tests |
 | Multipart upload functions | 4 tests |
-| Process notifications + outbox + queued videos tasks | 16 tests |
+| Process outbox + queued videos tasks | 10 tests |
 | Ready endpoint | 6 tests |
 | Routes (upload, get, retry) | 16 tests |
 | Upload endpoint | 8 tests |
@@ -687,7 +686,7 @@ python -m pytest tests/ -v
 | Lock system | 6 tests |
 | Producer | 4 tests |
 | WebSocket + proxy signature | 17 tests |
-| **Total** | **87 tests** |
+| **Total** | **81 tests** |
 
 ### Load and Performance Testing
 
@@ -806,8 +805,7 @@ MERIDIAN/
 │   │   ├── minio_client.py           # MinIO presigned URLs + multipart
 │   │   ├── celery_app.py             # Celery configuration (video queue routing)
 │   │   ├── tasks/
-│   │   │   ├── __init__.py           # Re-exports all 3 tasks
-│   │   │   ├── process_notifications.py   # BucketNotificationEvent → QUEUED (no retry)
+│   │   │   ├── __init__.py           # Re-exports 2 tasks
 │   │   │   ├── process_queued_videos.py   # QUEUED + published=false → Outbox
 │   │   │   └── process_outbox_events.py   # PENDING Outbox → Kafka publish
 │   │   ├── lock.py                   # Redis distributed locks (PROCESS + COMMIT)
@@ -827,7 +825,7 @@ MERIDIAN/
 │   │   │   └── ready.py
 │   │   └── utils/                    # S3 key extraction helpers
 │   │       └── notification_utils.py
-│   ├── tests/                        # pytest unit tests (87 tests)
+│   ├── tests/                        # pytest unit tests (81 tests)
 │   ├── Dockerfile                    # Python 3.12-slim
 │   ├── Dockerfile.celery             # Celery worker/beat image
 │   ├── requirements.txt

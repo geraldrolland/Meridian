@@ -69,7 +69,7 @@ MOCK_GET_SYNC_SESSION = MagicMock()
 MOCK_ACQUIRE_LOCK = MagicMock(return_value=MagicMock())
 MOCK_RELEASE_LOCK = MagicMock()
 MOCK_KAFKA_PRODUCER = MagicMock()
-MOCK_BUILD_OBJECT_URL = MagicMock(return_value="http://minio/test.mp4")
+
 
 
 def _setup_common_mocks(monkeypatch):
@@ -116,8 +116,6 @@ def _setup_common_mocks(monkeypatch):
     producer_mod.kafka_producer = MOCK_KAFKA_PRODUCER
 
     notif_utils_mod = _make_mock_module("app.utils.notification_utils")
-    notif_utils_mod.build_object_url = MOCK_BUILD_OBJECT_URL
-
     db_sync_mod = _make_mock_module("app.database_sync")
     db_sync_mod.get_sync_session = MOCK_GET_SYNC_SESSION
 
@@ -133,8 +131,6 @@ def _setup_common_mocks(monkeypatch):
         "app.models.notification": notif_mod,
         "app.models.outbox": outbox_mod,
         "app.models.video": video_mod,
-        "app.utils": _make_mock_module("app.utils"),
-        "app.utils.notification_utils": notif_utils_mod,
     }
 
     for mod_name, mock_mod in mock_modules.items():
@@ -142,7 +138,6 @@ def _setup_common_mocks(monkeypatch):
 
     for task_mod_name in [
         "app.tasks",
-        "app.tasks.process_notifications",
         "app.tasks.process_queued_videos",
         "app.tasks.process_outbox_events",
     ]:
@@ -153,7 +148,6 @@ def _setup_common_mocks(monkeypatch):
     MOCK_RELEASE_LOCK.reset_mock()
     MOCK_KAFKA_PRODUCER.reset_mock()
     MOCK_GET_SYNC_SESSION.reset_mock()
-    MOCK_BUILD_OBJECT_URL.return_value = "http://minio/test.mp4"
 
 
 def _make_mock_notification(notification_id="notif-1", video_id="video-123", size=2048):
@@ -190,118 +184,6 @@ def _make_mock_session(entities):
 @pytest.fixture(autouse=True)
 def _mock_heavy_deps(monkeypatch):
     _setup_common_mocks(monkeypatch)
-
-
-class TestProcessNotifications:
-    def test_sets_queued_on_success(self, _mock_heavy_deps):
-        from app.tasks.process_notifications import process_notifications
-
-        mock_video = _make_mock_video()
-        mock_notif = _make_mock_notification()
-
-        mock_session = _make_mock_session({
-            (MOCK_BUCKET_NOTIFICATION_EVENT, "notif-1"): mock_notif,
-            (MOCK_VIDEO_CLASS, "video-123"): mock_video,
-        })
-
-        MOCK_GET_SYNC_SESSION.return_value = mock_session
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_notif]
-
-        result = process_notifications()
-
-        assert mock_video.status == "QUEUED"
-        assert result["processed"] == 1
-
-    def test_extracts_size_from_event(self, _mock_heavy_deps):
-        from app.tasks.process_notifications import process_notifications
-
-        mock_video = _make_mock_video()
-        mock_notif = _make_mock_notification(size=4096)
-
-        mock_session = _make_mock_session({
-            (MOCK_BUCKET_NOTIFICATION_EVENT, "notif-1"): mock_notif,
-            (MOCK_VIDEO_CLASS, "video-123"): mock_video,
-        })
-
-        MOCK_GET_SYNC_SESSION.return_value = mock_session
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_notif]
-
-        process_notifications()
-
-        assert mock_video.size == 4096
-
-    def test_does_not_create_outbox_entry(self, _mock_heavy_deps):
-        from app.tasks.process_notifications import process_notifications
-
-        mock_video = _make_mock_video()
-        mock_notif = _make_mock_notification()
-
-        mock_session = _make_mock_session({
-            (MOCK_BUCKET_NOTIFICATION_EVENT, "notif-1"): mock_notif,
-            (MOCK_VIDEO_CLASS, "video-123"): mock_video,
-        })
-
-        MOCK_GET_SYNC_SESSION.return_value = mock_session
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_notif]
-
-        process_notifications()
-
-        mock_session.add.assert_not_called()
-        assert mock_video.status == "QUEUED"
-
-    def test_acquires_process_and_commit_locks(self, _mock_heavy_deps):
-        from app.tasks.process_notifications import process_notifications
-
-        mock_video = _make_mock_video()
-        mock_notif = _make_mock_notification()
-
-        mock_session = _make_mock_session({
-            (MOCK_BUCKET_NOTIFICATION_EVENT, "notif-1"): mock_notif,
-            (MOCK_VIDEO_CLASS, "video-123"): mock_video,
-        })
-
-        MOCK_GET_SYNC_SESSION.return_value = mock_session
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_notif]
-
-        process_notifications()
-
-        assert MOCK_ACQUIRE_LOCK.call_count == 2
-        MOCK_ACQUIRE_LOCK.assert_any_call(MOCK_LOCK_STATE.PROCESS, "notif-1")
-        MOCK_ACQUIRE_LOCK.assert_any_call(MOCK_LOCK_STATE.COMMIT, "notif-1")
-        assert MOCK_RELEASE_LOCK.call_count == 2
-
-    def test_returns_zero_when_no_pending(self, _mock_heavy_deps):
-        from app.tasks.process_notifications import process_notifications
-
-        mock_session = MagicMock(name="session")
-        MOCK_GET_SYNC_SESSION.return_value = mock_session
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = []
-
-        result = process_notifications()
-
-        assert result == {"processed": 0}
-
-    def test_on_error_sets_notification_and_video_failed(self, _mock_heavy_deps):
-        from app.tasks.process_notifications import process_notifications
-
-        mock_video = _make_mock_video()
-        mock_notif = _make_mock_notification()
-        mock_notif.video_id = "video-123"
-
-        mock_session = _make_mock_session({
-            (MOCK_BUCKET_NOTIFICATION_EVENT, "notif-1"): mock_notif,
-            (MOCK_VIDEO_CLASS, "video-123"): mock_video,
-        })
-
-        MOCK_GET_SYNC_SESSION.return_value = mock_session
-        mock_session.query.return_value.filter.return_value.limit.return_value.all.return_value = [mock_notif]
-
-        mock_session.commit.side_effect = Exception("simulated error")
-
-        process_notifications()
-
-        assert mock_notif.status == "FAILED"
-        assert mock_video.status == "FAILED"
 
 
 class TestProcessOutboxEvents:

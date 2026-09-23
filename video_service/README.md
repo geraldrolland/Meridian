@@ -51,10 +51,9 @@ The Video Service is the media backbone of MERIDIAN. It runs behind the API Gate
 2. Service validates the file extension, creates a video record, and returns presigned POST data
 3. Client uploads directly to MinIO using the presigned URL
 4. MinIO fires a bucket notification to Kafka
-5. `process_notifications` marks notification as FAILED on error (no retry)
-6. `process_queued_videos` sets published=true and creates Outbox record
-7. `process_outbox_events` dispatches Outbox events to Kafka
-8. Real-time status updates are pushed to connected clients via WebSocket (Redis pub/sub)
+5. `process_queued_videos` sets published=true and creates Outbox record
+6. `process_outbox_events` dispatches Outbox events to Kafka
+7. Real-time status updates are pushed to connected clients via WebSocket (Redis pub/sub)
 
 ## Tech Stack
 
@@ -377,8 +376,7 @@ video_service/
 │   ├── minio_client.py        # MinIO presigned URL + multipart helpers
 │   ├── producer.py            # KafkaProducer (auto event_id + ISO timestamp)
 │   ├── tasks/
-│   │   ├── __init__.py        # Re-exports all 3 tasks
-│   │   ├── process_notifications.py   # BucketNotificationEvent → QUEUED (no retry)
+│   │   ├── __init__.py        # Re-exports all 2 tasks
 │   │   ├── process_queued_videos.py   # QUEUED + published=false → Outbox
 │   │   └── process_outbox_events.py   # PENDING Outbox → Kafka publish
 │   ├── celery_app.py          # Celery config with video queue routing
@@ -433,7 +431,7 @@ python -m pytest tests/test_upload_endpoint.py -v
 | Middleware (proxy signature + session) | 7 tests |
 | MinIO client (presigned POST) | 2 tests |
 | Multipart upload functions | 4 tests |
-| Process notifications + outbox + queued videos tasks | 16 tests |
+| Process outbox + queued videos tasks | 10 tests |
 | Ready endpoint | 6 tests |
 | Routes (upload, get, retry) | 16 tests |
 | Upload endpoint | 8 tests |
@@ -441,7 +439,7 @@ python -m pytest tests/test_upload_endpoint.py -v
 | Lock system | 6 tests |
 | Producer | 4 tests |
 | WebSocket + proxy signature | 17 tests |
-| **Total** | **87 tests** |
+| **Total** | **81 tests** |
 
 ## Docker
 

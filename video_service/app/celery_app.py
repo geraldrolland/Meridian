@@ -21,18 +21,12 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     task_acks_on_failure_or_timeout=False,
     task_routes={
-        "app.tasks.process_notifications": {"queue": "video"},
         "app.tasks.process_queued_videos": {"queue": "video"},
         "app.tasks.process_outbox_events": {"queue": "video"},
     },
 )
 
 celery_app.conf.beat_schedule = {
-    "process-notifications-every-15-seconds": {
-        "task": "app.tasks.process_notifications",
-        "schedule": 15.0,
-        "options": {"queue": "video"},
-    },
     "process-queued-videos-every-15-seconds": {
         "task": "app.tasks.process_queued_videos",
         "schedule": 15.0,
