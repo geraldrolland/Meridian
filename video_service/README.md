@@ -14,18 +14,19 @@ The Video Service is the media backbone of MERIDIAN. It runs behind the API Gate
 - Outbox pattern for reliable downstream event dispatch
 - 6 Kafka consumers: notification, retry, processing, failure, manifest_generating, manifest_completed
 - Distributed Redis locks with nested lock pattern (PROCESS + COMMIT)
-- Retry logic with configurable backoff (max 5 retries)
+- Real-time WebSocket notifications for video status updates
+- Ownership-based access control on all video endpoints
 
 ## Architecture
 
 ```
 ┌──────────┐    ┌─────────────┐    ┌───────────────┐
 │  Client  │───▶│ API Gateway │───▶│ Video Service │
-└──────────┘    │  (port 3001)│    │  (port 8000)  │
-                └──────┬──────┘    └───────┬───────┘
+│          │◀───│  (port 3001)│    │  (port 8000)  │
+└──────────┘ WS └──────┬──────┘    └───────┬──────┘
                        │                   │
                   HMAC-signed          ┌───┴───┐
-                  requests             │       │
+                  requests + WS proxy  │       │
                                     ┌──┴──┐ ┌──┴────┐
                                     │Redis│ │PostgreSQL│
                                     │:6379│ │  :5432  │
@@ -50,8 +51,10 @@ The Video Service is the media backbone of MERIDIAN. It runs behind the API Gate
 2. Service validates the file extension, creates a video record, and returns presigned POST data
 3. Client uploads directly to MinIO using the presigned URL
 4. MinIO fires a bucket notification to Kafka
-5. Kafka consumer stores the event and updates the video status to `QUEUED`
-6. Outbox events are dispatched to downstream consumers via Celery
+5. `process_notifications` marks notification as FAILED on error (no retry)
+6. `process_queued_videos` sets published=true and creates Outbox record
+7. `process_outbox_events` dispatches Outbox events to Kafka
+8. Real-time status updates are pushed to connected clients via WebSocket (Redis pub/sub)
 
 ## Tech Stack
 
@@ -112,7 +115,62 @@ docker run -p 8000:8000 --env-file .env video-service
 
 ## API Endpoints
 
-All endpoints are prefixed with `/api/video` and require a valid proxy signature header from the API gateway.
+All endpoints are prefixed with `/api/video` and require a valid proxy signature header from the API gateway. Endpoints that access specific videos require ownership (the authenticated user must match the video's `user_id`).
+
+### Get Video
+
+```
+GET /api/video/{video_id}
+```
+
+Returns a video by ID. Supports optional `?status=` query filter.
+
+**Response (200):**
+```json
+{
+  "id": "uuid",
+  "filename": "clip.mp4",
+  "status": "COMPLETED",
+  "user_id": 1,
+  "published": true,
+  "num_of_retries": 0,
+  "created_at": "2026-09-16T12:00:00"
+}
+```
+
+| Status | Condition |
+|--------|-----------|
+| 200 | Video found |
+| 403 | Not authorized (user_id mismatch) |
+| 404 | Video not found or status mismatch |
+
+### Retry Video
+
+```
+POST /api/video/{video_id}/retry
+```
+
+Retries a video in `RETRY` status — resets it to `QUEUED` with `published=false` and increments `num_of_retries`.
+
+**Response (200):**
+```json
+{
+  "id": "uuid",
+  "filename": "clip.mp4",
+  "status": "QUEUED",
+  "user_id": 1,
+  "published": false,
+  "num_of_retries": 1,
+  "created_at": "2026-09-16T12:00:00"
+}
+```
+
+| Status | Condition |
+|--------|-----------|
+| 200 | Video queued for retry |
+| 400 | Video is not in RETRY status |
+| 403 | Not authorized |
+| 404 | Video not found |
 
 ### Upload Video
 
@@ -229,6 +287,36 @@ Discards all uploaded parts and marks the video as failed.
 | 400 | No multipart upload in progress |
 | 404 | Video not found |
 
+### WebSocket Notifications
+
+```
+WS /ws/video/notification
+```
+
+Real-time video status updates via WebSocket. The API gateway proxies the connection and attaches `x-proxy-signature` / `x-proxy-timestamp` headers for authentication. The video service verifies the HMAC signature before accepting.
+
+**Connection flow:**
+1. Client connects to API gateway at `/ws/video/notification` with `Authorization: Bearer <jwt>`
+2. Gateway verifies JWT, attaches proxy signature headers, forwards to video service
+3. Video service verifies proxy signature, extracts `user_id` from session cookie, accepts connection
+4. Status updates are pushed as JSON messages whenever a video's status changes
+
+**Message format:**
+```json
+{
+  "video_id": "uuid",
+  "status": "COMPLETED",
+  "user_id": 1
+}
+```
+
+**Close codes:**
+
+| Code | Reason |
+|------|--------|
+| 4001 | Missing session cookie |
+| 4003 | Invalid or missing proxy signature |
+
 ## Environment Variables
 
 | Variable | Description | Default |
@@ -247,10 +335,13 @@ Discards all uploaded parts and marks the video as failed.
 | `CELERY_RESULT_BACKEND` | Redis result backend | `redis://redis:6379/1` |
 | `REDIS_HOST` | Redis host | `redis` |
 | `REDIS_PORT` | Redis port | `6379` |
+| `REDIS_DB` | Redis database number for pub/sub | `3` |
+| `JWT_SECRET` | JWT signing secret for WebSocket auth | `test-secret` |
 | `PROXY_SECRET` | HMAC shared secret with API gateway | `change-me-in-production` |
 | `ALLOWED_VIDEO_EXTENSIONS` | Comma-separated allowed extensions | `mp4,mov,avi,mkv,webm,flv,wmv` |
 | `MULTIPART_THRESHOLD` | File size (bytes) for multipart switch | `104857600` (100 MB) |
 | `DEFAULT_PART_SIZE` | Part size (bytes) for multipart uploads | `5242880` (5 MB) |
+| `OUTBOX_MAX_RETRY` | Max retries before outbox event is marked FAILED | `5` |
 | `LOG_LEVEL` | Python logging level | `info` |
 
 ## Kafka Consumers
@@ -284,10 +375,15 @@ video_service/
 │   ├── database.py            # Async SQLAlchemy engine + session factory
 │   ├── main.py                # FastAPI app bootstrap + startup/shutdown
 │   ├── minio_client.py        # MinIO presigned URL + multipart helpers
-│   ├── producer.py            # KafkaProducer with auto event_id/timestamp
-│   ├── tasks.py               # Celery tasks (process_notifications, outbox, failed_videos)
+│   ├── producer.py            # KafkaProducer (auto event_id + ISO timestamp)
+│   ├── tasks/
+│   │   ├── __init__.py        # Re-exports all 3 tasks
+│   │   ├── process_notifications.py   # BucketNotificationEvent → QUEUED (no retry)
+│   │   ├── process_queued_videos.py   # QUEUED + published=false → Outbox
+│   │   └── process_outbox_events.py   # PENDING Outbox → Kafka publish
 │   ├── celery_app.py          # Celery config with video queue routing
 │   ├── lock.py                # Redis distributed locks (PROCESS + COMMIT nested pattern)
+│   ├── websocket.py           # WebSocket hub: Redis pub/sub, proxy signature verification
 │   ├── middleware/
 │   │   ├── check_proxy_signature.py  # HMAC gateway signature verification
 │   │   └── get_user_session.py       # Session cookie extraction
@@ -298,7 +394,7 @@ video_service/
 │   │   ├── session.py         # SessionData Pydantic model
 │   │   └── video.py           # Video SQLModel + VideoStatus enum (7 states)
 │   ├── routes/
-│   │   ├── video.py           # Upload, complete, abort endpoints
+│   │   ├── video.py           # Upload, complete, abort, get, retry, WS endpoints
 │   │   └── ready.py           # Database readiness probe
 │   └── utils/
 │       └── notification_utils.py  # S3 key extraction helpers
@@ -308,8 +404,10 @@ video_service/
 │   ├── test_multipart_upload.py  # Multipart upload tests
 │   ├── test_process_notifications.py  # Celery task tests
 │   ├── test_ready.py          # Readiness endpoint tests
+│   ├── test_routes.py         # Upload, get, retry endpoint tests
 │   ├── test_upload_endpoint.py  # Upload route tests
-│   └── test_video_model.py    # Model validation tests
+│   ├── test_video_model.py    # Model validation tests
+│   └── test_websocket.py      # WebSocket + proxy signature tests
 ├── Dockerfile
 ├── .env.example
 ├── requirements.txt
@@ -335,13 +433,15 @@ python -m pytest tests/test_upload_endpoint.py -v
 | Middleware (proxy signature + session) | 7 tests |
 | MinIO client (presigned POST) | 2 tests |
 | Multipart upload functions | 4 tests |
-| Process notifications task | 9 tests |
+| Process notifications + outbox + queued videos tasks | 16 tests |
 | Ready endpoint | 6 tests |
+| Routes (upload, get, retry) | 16 tests |
 | Upload endpoint | 8 tests |
 | Video/Upload models | 14 tests |
 | Lock system | 6 tests |
 | Producer | 4 tests |
-| **Total** | **60 tests** |
+| WebSocket + proxy signature | 17 tests |
+| **Total** | **87 tests** |
 
 ## Docker
 

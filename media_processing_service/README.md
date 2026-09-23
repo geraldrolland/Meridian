@@ -107,7 +107,7 @@ media_processing_service/
     ├── celery_app.py           # Celery configuration + beat schedule
     ├── config.py               # Pydantic settings (env-based)
     ├── consumer.py             # Kafka consumer (video.queued)
-    ├── producer.py             # Singleton sync Kafka producer
+    ├── producer.py             # Singleton sync Kafka producer (auto event_id + ISO timestamp)
     ├── lock.py                 # Redis distributed lock (PROCESSING + COMMITTING)
     ├── utils.py                # build_object_url, resolve_object_key, get_video_duration
     ├── db_config/
@@ -128,7 +128,7 @@ media_processing_service/
     │   ├── transcode_task.py   # TranscodeTask table + TranscodeTaskStatus
     │   ├── upload_task.py      # UploadTask table + UploadStatus
     │   ├── outbox.py           # Transactional Outbox table + OutboxStatus
-    │   └── event.py            # Pydantic model for incoming Kafka events
+    │   └── event.py            # Pydantic model for incoming Kafka events (timestamp: str)
     ├── routes/
     │   ├── health.py           # GET /health
     │   └── ready.py            # GET /ready (checks DB + Redis)

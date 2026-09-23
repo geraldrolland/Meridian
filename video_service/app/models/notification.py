@@ -27,8 +27,6 @@ class BucketNotificationEvent(SQLModel, table=True):
         max_length=16,
     )
     video_id: str = Field(max_length=36, foreign_key="videos.id")
-    num_of_retry: int = Field(default=0)
-    retry_after: datetime | None = Field(default=None, nullable=True)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
         nullable=False,

@@ -63,7 +63,6 @@ class Settings(BaseSettings):
     multipart_threshold: int = 100 * 1024 * 1024  # 100MB -- files larger than this use multipart
     default_part_size: int = 5 * 1024 * 1024      # 5MB -- chunk size for each part
     outbox_max_retry: int = 5
-    bucketnotification_max_retry: int = 5
     video_max_retry: int = 5
     log_level: str = "info"
 
