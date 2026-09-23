@@ -47,6 +47,7 @@ def _video_response(video: Video) -> dict:
         "published": video.published,
         "num_of_retries": video.num_of_retries,
         "notif_reference_id": video.notif_reference_id,
+        "thumbnail_url": video.thumbnail_url,
         "created_at": video.created_at.isoformat(),
     }
 

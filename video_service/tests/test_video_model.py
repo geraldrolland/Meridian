@@ -73,6 +73,14 @@ class TestVideoModel:
         video = Video(filename="test.mp4", notif_reference_id="req123deploy456")
         assert video.notif_reference_id == "req123deploy456"
 
+    def test_thumbnail_url_defaults_to_none(self):
+        video = Video(filename="test.mp4")
+        assert video.thumbnail_url is None
+
+    def test_thumbnail_url_can_be_set(self):
+        video = Video(filename="test.mp4", thumbnail_url="http://minio/vidthumbnails/thumb.jpg")
+        assert video.thumbnail_url == "http://minio/vidthumbnails/thumb.jpg"
+
 
 class TestUploadRequestModel:
     def test_upload_request_schema(self):
