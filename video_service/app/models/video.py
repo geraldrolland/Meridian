@@ -94,6 +94,7 @@ class Video(SQLModel, table=True):
     multipart_upload_id: str | None = Field(default=None, max_length=256, nullable=True)
     total_parts: int | None = Field(default=None, nullable=True)
     num_of_retries: int = Field(default=0)
+    notif_reference_id: str | None = Field(default=None, max_length=128, unique=True, nullable=True)
     published: bool = Field(default=False)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None),

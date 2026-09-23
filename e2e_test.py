@@ -211,39 +211,26 @@ _assert(r.status_code == 422, f"status=422 for .txt (got {r.status_code})")
 _assert("not allowed" in r.text, "rejection message mentions 'not allowed'")
 
 
-# ── Step 8: Poll video-db for bucket notification ──────────────────
-print("\n[8] Poll bucket_notification_events → expect row within 20s")
+# ── Step 8: Poll video for QUEUED status + notif_reference_id + size ─
+print("\n[8] Poll videos table → expect status=QUEUED + notif_reference_id + video_url + size within 20s")
 conn = psycopg2.connect(DB_DSN)
 conn.autocommit = True
 cur = conn.cursor()
 
-notification_found = False
-for _ in range(20):
-    cur.execute("SELECT id, status FROM bucket_notification_events WHERE id IN (SELECT id FROM bucket_notification_events ORDER BY created_at DESC LIMIT 1)")
-    row = cur.fetchone()
-    if row and row[1] == "RECEIVED":
-        notification_found = True
-        print(f"  Found notification id={row[0]}, status={row[1]}")
-        break
-    time.sleep(1)
-cur.close()
-_assert(notification_found, "bucket_notification_events row exists")
-
-
-# ── Step 9: Poll video for QUEUED status + size ───────────────────
-print("\n[9] Poll videos table → expect status=QUEUED + size set within 20s")
-cur = conn.cursor()
 video_updated = False
 for _ in range(20):
-    cur.execute("SELECT status, size FROM videos WHERE id = %s", (video_id,))
+    cur.execute(
+        "SELECT status, size, notif_reference_id, video_url FROM videos WHERE id = %s",
+        (video_id,),
+    )
     row = cur.fetchone()
-    if row and row[0] == "QUEUED" and row[1] is not None:
+    if row and row[0] == "QUEUED" and row[1] is not None and row[2] is not None and row[3] is not None:
         video_updated = True
-        print(f"  Video status={row[0]}, size={row[1]}")
+        print(f"  Video status={row[0]}, size={row[1]}, notif_reference_id={row[2]}")
         break
     time.sleep(1)
 cur.close()
-_assert(video_updated, "video status=QUEUED and size is set")
+_assert(video_updated, "video status=QUEUED, notif_reference_id, video_url, and size are set")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -255,7 +242,7 @@ media_conn.autocommit = True
 
 
 # ── Step 10: Poll outbox for video.queued published ────────────────
-print("\n[10] Poll outbox (video-db) → expect video.queued published within 60s")
+print("\n[9] Poll outbox (video-db) → expect video.queued published within 60s")
 cur = conn.cursor()
 outbox_published = False
 for _ in range(60):
@@ -275,7 +262,7 @@ _assert(outbox_published, "video.queued outbox event published")
 
 
 # ── Step 11: Poll jobs table — expect Job created ─────────────────
-print("\n[11] Poll jobs table (media-processing-db) → expect Job within 60s")
+print("\n[10] Poll jobs table (media-processing-db) → expect Job within 60s")
 mcur = media_conn.cursor()
 job_row = None
 for _ in range(60):
@@ -302,7 +289,7 @@ _assert(job_status == "PROCESSING", f"job status=PROCESSING (got {job_status})")
 
 
 # ── Step 12: Poll transcode_tasks + verify segments on disk ────────
-print("\n[12] Poll transcode_tasks (media-processing-db) + check /tmp/segments")
+print("\n[11] Poll transcode_tasks (media-processing-db) + check /tmp/segments")
 mcur = media_conn.cursor()
 transcode_rows = []
 for _ in range(60):
@@ -338,7 +325,7 @@ else:
 
 
 # ── Step 13: Poll upload_tasks — expect created ────────────────────
-print("\n[13] Poll upload_tasks (media-processing-db) → expect created within 60s")
+print("\n[12] Poll upload_tasks (media-processing-db) → expect created within 60s")
 transcode_ids = [r[0] for r in transcode_rows]
 upload_rows = []
 for _ in range(60):
@@ -359,7 +346,7 @@ print(f"  Upload statuses: {upload_statuses}")
 
 
 # ── Step 14: Poll upload_tasks completed + MinIO objects ────────────
-print("\n[14] Poll upload_tasks completed + verify objects in vidsegments bucket (120s)")
+print("\n[13] Poll upload_tasks completed + verify objects in vidsegments bucket (120s)")
 all_uploads_completed = False
 for _ in range(120):
     upload_ids = [r[0] for r in upload_rows]
@@ -385,7 +372,7 @@ print(f"  Found {len(segment_objects)} object(s) in {SEGMENT_BUCKET}/{video_id}/
 
 
 # ── Step 15: Poll job status = COMPLETED ───────────────────────────
-print("\n[15] Poll job status = COMPLETED (media-processing-db, 60s)")
+print("\n[14] Poll job status = COMPLETED (media-processing-db, 60s)")
 job_completed = False
 for _ in range(60):
     mcur.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
@@ -399,7 +386,7 @@ _assert(job_completed, "job status=COMPLETED")
 
 
 # ── Step 16: Poll job.completed outbox event ───────────────────────
-print("\n[16] Poll outbox (media-processing-db) → expect job.completed published within 60s")
+print("\n[15] Poll outbox (media-processing-db) → expect job.completed published within 60s")
 outbox_completed = False
 for _ in range(60):
     mcur.execute(
@@ -423,7 +410,7 @@ _assert(outbox_completed, "job.completed outbox event published")
 
 
 # ── Step 17: Verify cleanup ────────────────────────────────────────
-print("\n[17] Verify cleanup — /tmp/{segments,transcoded,downloads,thumbnails}/{video_id} should be removed")
+print("\n[16] Verify cleanup — /tmp/{segments,transcoded,downloads,thumbnails}/{video_id} should be removed")
 TEMP_DIRS = ["/tmp/segments", "/tmp/transcoded", "/tmp/downloads", "/tmp/thumbnails"]
 all_cleaned = False
 for _ in range(30):

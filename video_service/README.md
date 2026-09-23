@@ -387,15 +387,15 @@ video_service/
 │   │   └── get_user_session.py       # Session cookie extraction
 │   ├── models/
 │   │   ├── events.py          # MinIO event Pydantic models
-│   │   ├── notification.py    # BucketNotificationEvent SQLModel (with video_id FK)
+│   │   ├── notification.py    # DEPRECATED — BucketNotificationEvent removed
 │   │   ├── outbox.py          # Outbox event SQLModel (with video_id FK)
 │   │   ├── session.py         # SessionData Pydantic model
-│   │   └── video.py           # Video SQLModel + VideoStatus enum (7 states)
+│   │   └── video.py           # Video SQLModel + VideoStatus enum (7 states, notif_reference_id)
 │   ├── routes/
 │   │   ├── video.py           # Upload, complete, abort, get, retry, WS endpoints
 │   │   └── ready.py           # Database readiness probe
 │   └── utils/
-│       └── notification_utils.py  # S3 key extraction helpers
+│       └── notification_utils.py  # build_object_url, build_id, extract_video_id
 ├── tests/
 │   ├── middleware/             # Middleware unit tests
 │   ├── test_minio_client.py   # MinIO client tests

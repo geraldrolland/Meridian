@@ -815,8 +815,8 @@ MERIDIAN/
 │   │   │   ├── check_proxy_signature.py
 │   │   │   └── get_user_session.py
 │   │   ├── models/                   # SQLModel: video, notification, outbox, session
-│   │   │   ├── video.py              # VideoStatus: 7 states + published field
-│   │   │   ├── notification.py       # BucketNotificationEvent (FK video_id)
+│   │   │   ├── video.py              # VideoStatus: 7 states + notif_reference_id field
+│   │   │   ├── notification.py       # DEPRECATED — BucketNotificationEvent removed
 │   │   │   ├── outbox.py             # Outbox (FK video_id)
 │   │   │   ├── events.py
 │   │   │   └── session.py

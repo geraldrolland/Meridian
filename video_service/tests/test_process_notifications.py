@@ -35,14 +35,8 @@ class _FakeColumn:
         return True
 
 
-MOCK_BUCKET_NOTIFICATION_EVENT = MagicMock(name="BucketNotificationEvent")
 MOCK_VIDEO_CLASS = MagicMock(name="Video")
 MOCK_OUTBOX_CLASS = MagicMock(name="Outbox")
-
-MOCK_NOTIFICATION_STATUS = MagicMock(name="NotificationStatus")
-MOCK_NOTIFICATION_STATUS.PENDING = _FakeEnumMember("PENDING")
-MOCK_NOTIFICATION_STATUS.RECEIVED = _FakeEnumMember("RECEIVED")
-MOCK_NOTIFICATION_STATUS.FAILED = _FakeEnumMember("FAILED")
 
 MOCK_VIDEO_STATUS = MagicMock(name="VideoStatus")
 MOCK_VIDEO_STATUS.AWAITING_UPLOAD = _FakeEnumMember("AWAITING_UPLOAD")
@@ -71,16 +65,10 @@ MOCK_RELEASE_LOCK = MagicMock()
 MOCK_KAFKA_PRODUCER = MagicMock()
 
 
-
 def _setup_common_mocks(monkeypatch):
     kafka_mod = _make_mock_module("kafka")
     kafka_errors = _make_mock_module("kafka.errors")
     kafka_errors.NoBrokersAvailable = type("NoBrokersAvailable", (Exception,), {})
-
-    notif_mod = _make_mock_module("app.models.notification")
-    notif_mod.BucketNotificationEvent = MOCK_BUCKET_NOTIFICATION_EVENT
-    notif_mod.NotificationStatus = MOCK_NOTIFICATION_STATUS
-    MOCK_BUCKET_NOTIFICATION_EVENT.status = _FakeColumn("PENDING")
 
     outbox_mod = _make_mock_module("app.models.outbox")
     outbox_mod.Outbox = MOCK_OUTBOX_CLASS
@@ -115,7 +103,6 @@ def _setup_common_mocks(monkeypatch):
     producer_mod = _make_mock_module("app.producer")
     producer_mod.kafka_producer = MOCK_KAFKA_PRODUCER
 
-    notif_utils_mod = _make_mock_module("app.utils.notification_utils")
     db_sync_mod = _make_mock_module("app.database_sync")
     db_sync_mod.get_sync_session = MOCK_GET_SYNC_SESSION
 
@@ -128,7 +115,6 @@ def _setup_common_mocks(monkeypatch):
         "app.producer": producer_mod,
         "app.celery_app": celery_mod,
         "app.models": _make_mock_module("app.models"),
-        "app.models.notification": notif_mod,
         "app.models.outbox": outbox_mod,
         "app.models.video": video_mod,
     }
@@ -148,15 +134,6 @@ def _setup_common_mocks(monkeypatch):
     MOCK_RELEASE_LOCK.reset_mock()
     MOCK_KAFKA_PRODUCER.reset_mock()
     MOCK_GET_SYNC_SESSION.reset_mock()
-
-
-def _make_mock_notification(notification_id="notif-1", video_id="video-123", size=2048):
-    mock_notif = MagicMock(name="notif_record")
-    mock_notif.id = notification_id
-    mock_notif.status = _FakeEnumMember("PENDING")
-    mock_notif.extract_video_id.return_value = video_id
-    mock_notif.event = {"Records": [{"s3": {"object": {"size": size}}}]}
-    return mock_notif
 
 
 def _make_mock_video(video_id="video-123", status="AWAITING_UPLOAD", published=False):

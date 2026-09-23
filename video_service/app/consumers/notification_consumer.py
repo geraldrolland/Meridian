@@ -9,7 +9,8 @@ from sqlalchemy.exc import IntegrityError
 from app.config import settings
 from app.database import async_session_factory
 from app.models.events import MinIOEvent
-from app.models.notification import BucketNotificationEvent
+from app.models.video import Video, VideoStatus
+from app.utils.notification_utils import build_id, build_object_url, extract_video_id
 from app.websocket import publish_update
 
 from app.consumers.base import AppRebalanceListener
@@ -35,26 +36,45 @@ async def consume_messages(consumer: AIOKafkaConsumer) -> None:
                 validated = MinIOEvent.model_validate(event_dict)
 
                 async with async_session_factory() as session:
-                    record = BucketNotificationEvent(event=event_dict)
-                    record.id = record.build_id()
-                    record.video_id = record.extract_video_id()
-                    session.add(record)
-                    await session.commit()
-                    event_id = record.id
+                    video_id = extract_video_id(event_dict)
+                    if not video_id:
+                        logger.warning(
+                            "Could not extract video_id from event at offset %d",
+                            msg.offset,
+                        )
+                        await consumer.commit(
+                            {TopicPartition(msg.topic, msg.partition): msg.offset + 1}
+                        )
+                        continue
 
-                    if record.video_id:
-                        from app.models.video import Video
-                        video = await session.get(Video, record.video_id)
-                        if video and video.user_id is not None:
-                            await publish_update(
-                                video_id=record.video_id,
-                                status=video.status,
-                                user_id=video.user_id,
-                            )
+                    video = await session.get(Video, video_id)
+                    if video is None:
+                        logger.warning(
+                            "Video %s not found for event at offset %d",
+                            video_id,
+                            msg.offset,
+                        )
+                        await consumer.commit(
+                            {TopicPartition(msg.topic, msg.partition): msg.offset + 1}
+                        )
+                        continue
+
+                    video.notif_reference_id = build_id(event_dict)
+                    video.video_url = build_object_url(event_dict)
+                    video.size = event_dict["Records"][0]["s3"]["object"]["size"]
+                    video.status = VideoStatus.QUEUED.value
+                    await session.commit()
+
+                    if video.user_id is not None:
+                        await publish_update(
+                            video_id=video_id,
+                            status=video.status,
+                            user_id=video.user_id,
+                        )
 
                 logger.info(
-                    "Stored event id=%s topic=%s partition=%d offset=%d eventName=%s key=%s",
-                    event_id,
+                    "Processed video_id=%s topic=%s partition=%d offset=%d eventName=%s key=%s",
+                    video_id,
                     msg.topic,
                     msg.partition,
                     msg.offset,
@@ -75,7 +95,7 @@ async def consume_messages(consumer: AIOKafkaConsumer) -> None:
             except IntegrityError:
                 await session.rollback()
                 logger.warning(
-                    "Duplicate notification at offset %d, skipping",
+                    "Duplicate event at offset %d, skipping",
                     msg.offset,
                 )
                 await consumer.commit(
