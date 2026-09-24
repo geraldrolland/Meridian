@@ -17,7 +17,7 @@ def _sign_ws(path: str, timestamp: str, secret: str = "test-secret") -> str:
 class TestVerifyProxySignature:
     @patch("app.websocket.settings")
     def test_valid_signature(self, mock_settings):
-        mock_settings.jwt_secret = "test-secret"
+        mock_settings.proxy_secret = "test-secret"
         from app.websocket import verify_proxy_signature
 
         ts = str(int(time.time() * 1000))
@@ -26,7 +26,7 @@ class TestVerifyProxySignature:
 
     @patch("app.websocket.settings")
     def test_expired_timestamp(self, mock_settings):
-        mock_settings.jwt_secret = "test-secret"
+        mock_settings.proxy_secret = "test-secret"
         from app.websocket import verify_proxy_signature
 
         ts = str(int(time.time() * 1000) - 61_000)
@@ -35,7 +35,7 @@ class TestVerifyProxySignature:
 
     @patch("app.websocket.settings")
     def test_invalid_signature(self, mock_settings):
-        mock_settings.jwt_secret = "test-secret"
+        mock_settings.proxy_secret = "test-secret"
         from app.websocket import verify_proxy_signature
 
         ts = str(int(time.time() * 1000))
@@ -43,14 +43,14 @@ class TestVerifyProxySignature:
 
     @patch("app.websocket.settings")
     def test_non_numeric_timestamp(self, mock_settings):
-        mock_settings.jwt_secret = "test-secret"
+        mock_settings.proxy_secret = "test-secret"
         from app.websocket import verify_proxy_signature
 
         assert verify_proxy_signature("/ws/video/notification", "sig", "not-a-number") is False
 
     @patch("app.websocket.settings")
     def test_none_timestamp(self, mock_settings):
-        mock_settings.jwt_secret = "test-secret"
+        mock_settings.proxy_secret = "test-secret"
         from app.websocket import verify_proxy_signature
 
         assert verify_proxy_signature("/ws/video/notification", "sig", None) is False
@@ -103,7 +103,7 @@ class TestWsVideoEndpoint:
         ws.close = AsyncMock()
 
         with patch("app.websocket.settings") as mock_settings:
-            mock_settings.jwt_secret = "test-secret"
+            mock_settings.proxy_secret = "test-secret"
             await ws_video_endpoint(ws, "123")
 
         ws.close.assert_called_once_with(code=4003, reason="Invalid proxy signature")
@@ -119,7 +119,7 @@ class TestWsVideoEndpoint:
         ws.headers = {"x-proxy-signature": sig, "x-proxy-timestamp": ts}
 
         with patch("app.websocket.settings") as mock_settings:
-            mock_settings.jwt_secret = "test-secret"
+            mock_settings.proxy_secret = "test-secret"
             task = asyncio.create_task(ws_video_endpoint(ws, "42"))
             await asyncio.sleep(0.05)
 
@@ -147,7 +147,7 @@ class TestWsVideoEndpoint:
         ws.headers = {"x-proxy-signature": sig, "x-proxy-timestamp": ts}
 
         with patch("app.websocket.settings") as mock_settings:
-            mock_settings.jwt_secret = "test-secret"
+            mock_settings.proxy_secret = "test-secret"
             task = asyncio.create_task(ws_video_endpoint(ws, "99"))
             await asyncio.sleep(0.05)
 

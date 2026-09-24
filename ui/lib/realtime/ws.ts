@@ -23,9 +23,13 @@ export function connectVideoWs(
     onStatus?.(s);
   };
 
-  const getUrl = () => {
+  const getUrl = (token: string) => {
     const base = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:3001";
-    return base.replace(/^http/, "ws") + "/ws/video/notification";
+    return (
+      base.replace(/^http/, "ws") +
+      "/ws/video/notification?token=" +
+      encodeURIComponent(token)
+    );
   };
 
   const open = async () => {
@@ -38,24 +42,25 @@ export function connectVideoWs(
       return;
     }
 
+    let socket: WebSocket;
     try {
-      ws = new WebSocket(getUrl());
+      socket = new WebSocket(getUrl(token));
     } catch {
       scheduleReconnect();
       return;
     }
+    ws = socket;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+      if (closed) {
+        socket.close();
+        return;
+      }
       attempt = 0;
       setStatus("open");
-      try {
-        ws?.send("auth");
-      } catch {
-        /* browsers may not allow custom headers on WS; gateway validates upgrade */
-      }
     };
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data as string) as WsNotification;
         if (data && data.video_id) onMessage(data);
@@ -64,9 +69,11 @@ export function connectVideoWs(
       }
     };
 
-    ws.onerror = () => setStatus("error");
+    socket.onerror = () => {
+      if (!closed) setStatus("error");
+    };
 
-    ws.onclose = async (e) => {
+    socket.onclose = async (e) => {
       if (closed) return;
       setStatus("closed");
       if (e.code === 4001) {
@@ -90,11 +97,28 @@ export function connectVideoWs(
   return {
     close: () => {
       closed = true;
-      if (timer) clearTimeout(timer);
-      try {
-        ws?.close();
-      } catch {
-        /* ignore */
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      const socket = ws;
+      ws = null;
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        if (socket.readyState === WebSocket.CONNECTING) {
+          socket.addEventListener("open", () => socket.close(), {
+            once: true,
+          });
+        } else {
+          try {
+            socket.close();
+          } catch {
+            /* ignore */
+          }
+        }
       }
       setStatus("closed");
     },

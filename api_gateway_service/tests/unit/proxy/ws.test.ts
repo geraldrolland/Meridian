@@ -1,4 +1,4 @@
-import { EventEmitter } from 'events';
+﻿import { EventEmitter } from 'events';
 
 const mockUpgradeCb = jest.fn();
 
@@ -198,6 +198,26 @@ describe('WebSocket Proxy', () => {
       cb(clientWs);
       expect(clientWs.close).toHaveBeenCalledWith(4001, 'Invalid token payload');
     });
+
+    it('should accept token from query parameter', async () => {
+      jwtMock.verify.mockReturnValue({ sessionId: 'sess-query' } as any);
+      redisMock.get.mockResolvedValue(JSON.stringify({ userId: 'uq1', email: 'q@q.com' }));
+
+      const socket = makeSocket();
+      upgradeHandler(
+        makeReq('/ws/video/notification?token=query-token'),
+        socket,
+        Buffer.alloc(0),
+      );
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(jwtMock.verify).toHaveBeenCalledWith('query-token', 'test-jwt-secret');
+      expect(mockUpgradeCb).toHaveBeenCalled();
+      const cb = mockUpgradeCb.mock.calls[0][0];
+      cb(clientWs);
+      expect(clientWs.close).not.toHaveBeenCalledWith(4001, 'Missing token');
+    });
   });
 
   describe('session lookup', () => {
@@ -246,11 +266,44 @@ describe('WebSocket Proxy', () => {
       cb(clientWs);
 
       expect(WS).toHaveBeenCalledWith(
-        'ws://video-service:8000/ws/video/notification',
+        'ws://video-service:8000/api/video/ws/video/notification',
         expect.objectContaining({
           headers: expect.objectContaining({
             'x-proxy-signature': expect.any(String),
             'x-proxy-timestamp': expect.any(String),
+          }),
+        }),
+      );
+    });
+
+    it('should forward the session cookie to upstream video-service', async () => {
+      jwtMock.verify.mockReturnValue({ sessionId: 'sess-cookie' } as any);
+      redisMock.get.mockResolvedValue(JSON.stringify({ userId: 'u-cookie', email: 'c@c.com' }));
+
+      const mockUpstream = createMockUpstream();
+      const WS = require('ws').WebSocket;
+      WS.mockImplementation(function (this: any) {
+        Object.assign(this, mockUpstream);
+        EventEmitter.call(this);
+      });
+
+      const socket = makeSocket();
+      upgradeHandler(
+        makeReq('/ws/video/notification', { authorization: 'Bearer valid-token' }),
+        socket,
+        Buffer.alloc(0),
+      );
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      const cb = mockUpgradeCb.mock.calls[0][0];
+      cb(clientWs);
+
+      expect(WS).toHaveBeenCalledWith(
+        'ws://video-service:8000/api/video/ws/video/notification',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            cookie: 'session=' + encodeURIComponent(JSON.stringify({ userId: 'u-cookie', email: 'c@c.com' })),
           }),
         }),
       );

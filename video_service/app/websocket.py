@@ -41,7 +41,7 @@ def verify_proxy_signature(path: str, signature: str, timestamp_str: str) -> boo
 
     payload = f"GET:{path}:{timestamp_str}"
     expected = hmac.new(
-        settings.jwt_secret.encode(),
+        settings.proxy_secret.encode(),
         payload.encode(),
         hashlib.sha256,
     ).hexdigest()

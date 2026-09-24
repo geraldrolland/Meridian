@@ -34,7 +34,8 @@ function createWsProxy(server: http.Server): void {
     }
 
     const authHeader = req.headers.authorization;
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const token = headerToken || url.searchParams.get('token');
 
     if (!token) {
       wss.handleUpgrade(req, socket, head, (ws) => {
@@ -72,15 +73,17 @@ function createWsProxy(server: http.Server): void {
         const session: SessionData = JSON.parse(sessionRaw);
 
         wss.handleUpgrade(req, socket, head, (clientWs) => {
-          const targetPath = '/ws/video/notification';
-          const { signature, timestamp } = signWsRequest(targetPath);
+          const signaturePath = '/ws/video/notification';
+          const { signature, timestamp } = signWsRequest(signaturePath);
+          const sessionCookie = `session=${encodeURIComponent(JSON.stringify(session))}`;
 
           const upstreamWs = new WebSocket(
-            `ws://video-service:8000${targetPath}`,
+            'ws://video-service:8000/api/video/ws/video/notification',
             {
               headers: {
                 'x-proxy-signature': signature,
                 'x-proxy-timestamp': timestamp,
+                cookie: sessionCookie,
               },
             }
           );

@@ -36,6 +36,8 @@ router = APIRouter(
     dependencies=[Depends(check_proxy_signature)],
 )
 
+ws_router = APIRouter(prefix="/api/video")
+
 
 def _video_response(video: Video) -> dict:
     """Serialize a Video record to a JSON-safe dict for API responses."""
@@ -209,7 +211,7 @@ async def abort_upload(
     return {"status": video.status}
 
 
-@router.websocket("/ws/video/notification")
+@ws_router.websocket("/ws/video/notification")
 async def video_ws(websocket: WebSocket):
     session_cookie = websocket.cookies.get("session")
     if not session_cookie:

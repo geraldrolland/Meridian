@@ -10,7 +10,7 @@ from app.consumers import start_consumer, start_processing_consumer, start_failu
 from app.producer import kafka_producer
 from app.routes.health import router as health_router
 from app.routes.ready import router as ready_router
-from app.routes.video import router as video_router
+from app.routes.video import router as video_router, ws_router as video_ws_router
 from app.websocket import start_pubsub_listener
 
 logging.basicConfig(
@@ -80,3 +80,4 @@ app = FastAPI(
 app.include_router(health_router)
 app.include_router(ready_router)
 app.include_router(video_router)
+app.include_router(video_ws_router)
