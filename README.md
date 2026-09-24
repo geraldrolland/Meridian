@@ -563,6 +563,16 @@ cd Meridian
 docker compose up --build -d
 ```
 
+#### Step 3: Start the UI (optional)
+
+```bash
+cd ui
+npm install
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). The gateway allows this origin with credentials (`CORS_ORIGIN`, `CORS_CREDENTIALS` in `docker-compose.yml`). See [`ui/README.md`](ui/README.md).
+
 This command builds all service images and starts **18 containers**:
 
 | Container | Service | Purpose |
@@ -882,6 +892,13 @@ MERIDIAN/
 │   ├── Dockerfile                    # Multi-stage Node 20 Alpine build
 │   ├── package.json
 │   └── tsconfig.json
+│
+├── ui/                               # Next.js frontend (Port 3000)
+│   ├── app/                          # Landing, auth, dashboard, upload, video player
+│   ├── components/                   # Brand, player, video, shadcn-style UI
+│   ├── lib/                          # API client, upload, WebSocket, MinIO URL rewrite
+│   ├── public/demo/                  # Product demo video
+│   └── README.md
 │
 ├── auth_service/                     # Express TypeScript Auth Service (Port 4000)
 │   ├── src/

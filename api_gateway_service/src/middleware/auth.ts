@@ -13,7 +13,7 @@ import { AuthenticatedRequest, JwtPayload, SessionData } from '../types';
  * 3. Verify the JWT signature using `JWT_SECRET`
  * 4. Extract `sessionId` from the decoded payload
  * 5. Look up the session in Redis (`session:<sessionId>`)
- * 6. Attach the session data (`userId`, `role`, `email`) to `req.user`
+ * 6. Attach the session data (`userId`, `email`) to `req.user`
  *
  * Paths like `/health`, `/api/auth/login`, and `/api/auth/register` are
  * excluded from authentication to allow unauthenticated access.

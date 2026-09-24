@@ -17,7 +17,7 @@ def make_request():
 async def test_valid_session_cookie(make_request):
     from app.middleware.get_user_session import get_user_session
 
-    session_data = {"userId": 1, "role": "admin", "email": "a@b.com"}
+    session_data = {"userId": 1, "email": "a@b.com"}
     cookie = quote(json.dumps(session_data))
     request = make_request(cookies={"session": cookie})
 
@@ -25,7 +25,6 @@ async def test_valid_session_cookie(make_request):
 
     assert result is not None
     assert result.userId == 1
-    assert result.role == "admin"
     assert result.email == "a@b.com"
 
 

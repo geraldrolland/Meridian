@@ -105,26 +105,21 @@ describe('Proxy Module', () => {
       expect(cookieArg).toBeUndefined();
     });
 
-    it('should set proxy signature headers', () => {
-      const mockProxyReq = {
-        getHeader: jest.fn().mockReturnValue(''),
-        setHeader: jest.fn(),
+    it('should set proxy signature headers on the Express request', () => {
+      const { signProxyRequest } = require('../../../src/proxy/index');
+      const req = {
+        method: 'GET',
+        url: '/api/test/data',
+        originalUrl: '/api/test/data',
+        headers: {} as Record<string, string>,
       };
-      const req = { method: 'GET', url: '/api/test/data' };
+      const next = jest.fn();
 
-      proxyReqHandler(mockProxyReq, req);
+      signProxyRequest(req, {} as any, next);
 
-      const signatureCall = mockProxyReq.setHeader.mock.calls.find(
-        (call: any[]) => call[0] === 'x-proxy-signature'
-      );
-      const timestampCall = mockProxyReq.setHeader.mock.calls.find(
-        (call: any[]) => call[0] === 'x-proxy-timestamp'
-      );
-
-      expect(signatureCall).toBeDefined();
-      expect(typeof signatureCall![1]).toBe('string');
-      expect(timestampCall).toBeDefined();
-      expect(Number(timestampCall![1])).toBeGreaterThan(0);
+      expect(req.headers['x-proxy-signature']).toEqual(expect.any(String));
+      expect(Number(req.headers['x-proxy-timestamp'])).toBeGreaterThan(0);
+      expect(next).toHaveBeenCalled();
     });
 
     it('should log proxy request', () => {

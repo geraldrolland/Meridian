@@ -82,12 +82,10 @@ export interface JwtPayload {
  * Session data stored in Redis as `session:<sessionId>`.
  *
  * @property userId - The user's primary key
- * @property role - User role for authorization (reserved for future use)
  * @property email - User's email address
  */
 export interface SessionData {
   userId: string;
-  role: string;
   email: string;
 }
 

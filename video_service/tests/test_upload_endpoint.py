@@ -96,7 +96,7 @@ class TestUploadEndpoint:
 
         mock_session = _make_mock_session()
         body = UploadRequest(filename="test.mp4")
-        user = SessionData(userId=42, role="user", email="a@b.com")
+        user = SessionData(userId=42, email="a@b.com")
 
         await upload_video(body=body, session=mock_session, user=user)
 
@@ -119,7 +119,7 @@ class TestUploadEndpoint:
 
         mock_session = _make_mock_session()
         body = UploadRequest(filename="test.mp4")
-        user = SessionData(userId=1, role="user", email="a@b.com")
+        user = SessionData(userId=1, email="a@b.com")
 
         result = await upload_video(body=body, session=mock_session, user=user)
 
@@ -137,7 +137,7 @@ class TestUploadEndpoint:
 
         mock_session = _make_mock_session()
         body = UploadRequest(filename="malicious.txt")
-        user = SessionData(userId=1, role="user", email="a@b.com")
+        user = SessionData(userId=1, email="a@b.com")
 
         with pytest.raises(HTTPException) as exc_info:
             await upload_video(body=body, session=mock_session, user=user)
@@ -151,7 +151,7 @@ class TestUploadEndpoint:
 
         mock_session = _make_mock_session()
         body = UploadRequest(filename="clip.mkv")
-        user = SessionData(userId=1, role="user", email="a@b.com")
+        user = SessionData(userId=1, email="a@b.com")
 
         result = await upload_video(body=body, session=mock_session, user=user)
 
@@ -164,7 +164,7 @@ class TestUploadEndpoint:
 
         mock_session = _make_mock_session()
         body = UploadRequest(filename="test.webm", content_type="video/webm")
-        user = SessionData(userId=1, role="user", email="a@b.com")
+        user = SessionData(userId=1, email="a@b.com")
 
         await upload_video(body=body, session=mock_session, user=user)
 
@@ -178,7 +178,7 @@ class TestUploadEndpoint:
 
         mock_session = _make_mock_session()
         body = UploadRequest(filename="large.mp4", file_size=200 * 1024 * 1024)  # 200MB
-        user = SessionData(userId=1, role="user", email="a@b.com")
+        user = SessionData(userId=1, email="a@b.com")
 
         result = await upload_video(body=body, session=mock_session, user=user)
 
@@ -193,7 +193,7 @@ class TestUploadEndpoint:
 
         mock_session = _make_mock_session()
         body = UploadRequest(filename="small.mp4", file_size=1024)  # 1KB
-        user = SessionData(userId=1, role="user", email="a@b.com")
+        user = SessionData(userId=1, email="a@b.com")
 
         result = await upload_video(body=body, session=mock_session, user=user)
 

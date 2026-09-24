@@ -72,8 +72,8 @@ def _make_video(
     return v
 
 
-def _make_user(user_id=1, role="user", email="a@b.com"):
-    return SessionData(userId=user_id, role=role, email=email)
+def _make_user(user_id=1, email="a@b.com"):
+    return SessionData(userId=user_id, email=email)
 
 
 class TestGetVideo:

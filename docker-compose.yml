@@ -18,6 +18,8 @@ services:
       - AUTH_EXCLUDE_PATHS=/health,/ready,/api/auth/refresh-token,/api/auth/login,/api/auth/register
       - RATE_LIMIT_WINDOW_MS=900000
       - RATE_LIMIT_MAX=100
+      - CORS_ORIGIN=http://localhost:3000,http://127.0.0.1:3000
+      - CORS_CREDENTIALS=true
       - ROUTES=[{"prefix":"/api/auth","target":"http://auth-service:4000"},{"prefix":"/api/video","target":"http://video-service:8000"}]
     depends_on:
       redis:
@@ -274,11 +276,11 @@ services:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
-      interval: 5s
-      timeout: 3s
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 15s
+      timeout: 10s
       retries: 5
-      start_period: 15s
+      start_period: 30s
     networks:
       - meridian
     restart: unless-stopped
@@ -325,9 +327,9 @@ services:
       - REDIS_PORT=6379
     command: celery -A app.celery_app:celery_app beat --loglevel=info
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      test: ["CMD-SHELL", "grep -q beat /proc/1/cmdline"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 30s
     depends_on:
@@ -449,9 +451,9 @@ services:
       - LOG_LEVEL=info
     command: celery -A app.celery_app:celery_app beat --loglevel=info
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      test: ["CMD-SHELL", "grep -q beat /proc/1/cmdline"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 30s
     depends_on:
@@ -572,9 +574,9 @@ services:
       - MINIO_SECURE=false
     command: celery -A app.celery_app:celery_app beat --loglevel=info
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      test: ["CMD-SHELL", "grep -q beat /proc/1/cmdline"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 30s
     depends_on:
