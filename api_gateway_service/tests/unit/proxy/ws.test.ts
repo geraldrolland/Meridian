@@ -26,6 +26,7 @@ jest.mock('../../../src/config/redis', () => ({
 jest.mock('../../../src/middleware/logger', () => ({
   logger: {
     info: jest.fn(),
+    warn: jest.fn(),
     error: jest.fn(),
   },
 }));
@@ -62,7 +63,7 @@ jest.mock('ws', () => {
 
 const jwtMock = require('jsonwebtoken').default as { verify: jest.Mock };
 const redisMock = require('../../../src/config/redis').default as { get: jest.Mock };
-const loggerMock = require('../../../src/middleware/logger').logger as { info: jest.Mock; error: jest.Mock };
+const loggerMock = require('../../../src/middleware/logger').logger as { info: jest.Mock; warn: jest.Mock; error: jest.Mock };
 const WS = require('ws').WebSocket as jest.Mock;
 
 let upgradeHandler: (req: any, socket: any, head: any) => void;
@@ -155,6 +156,10 @@ describe('WebSocket Proxy', () => {
       const cb = mockUpgradeCb.mock.calls[0][0];
       cb(clientWs);
       expect(clientWs.close).toHaveBeenCalledWith(4001, 'Missing token');
+      expect(loggerMock.warn).toHaveBeenCalledWith(
+        'WS handshake rejected: missing token (ip=%s)',
+        expect.anything(),
+      );
     });
 
     it('should close 4001 when Authorization header has no Bearer prefix', () => {
@@ -181,6 +186,10 @@ describe('WebSocket Proxy', () => {
       const cb = mockUpgradeCb.mock.calls[0][0];
       cb(clientWs);
       expect(clientWs.close).toHaveBeenCalledWith(4001, 'Invalid token');
+      expect(loggerMock.warn).toHaveBeenCalledWith(
+        'WS handshake rejected: invalid token (ip=%s)',
+        expect.anything(),
+      );
     });
 
     it('should close 4001 when JWT has no sessionId', () => {

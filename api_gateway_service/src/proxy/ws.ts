@@ -36,8 +36,10 @@ function createWsProxy(server: http.Server): void {
     const authHeader = req.headers.authorization;
     const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const token = headerToken || url.searchParams.get('token');
+    const ip = req.socket?.remoteAddress || 'unknown';
 
     if (!token) {
+      logger.warn('WS handshake rejected: missing token (ip=%s)', ip);
       wss.handleUpgrade(req, socket, head, (ws) => {
         ws.close(4001, 'Missing token');
       });
@@ -48,6 +50,7 @@ function createWsProxy(server: http.Server): void {
     try {
       decoded = jwt.verify(token, config.auth.jwtSecret) as { sessionId: string };
     } catch {
+      logger.warn('WS handshake rejected: invalid token (ip=%s)', ip);
       wss.handleUpgrade(req, socket, head, (ws) => {
         ws.close(4001, 'Invalid token');
       });
@@ -55,6 +58,7 @@ function createWsProxy(server: http.Server): void {
     }
 
     if (!decoded.sessionId) {
+      logger.warn('WS handshake rejected: invalid token payload (ip=%s)', ip);
       wss.handleUpgrade(req, socket, head, (ws) => {
         ws.close(4001, 'Invalid token payload');
       });
@@ -64,6 +68,7 @@ function createWsProxy(server: http.Server): void {
     redis.get(`session:${decoded.sessionId}`)
       .then((sessionRaw) => {
         if (!sessionRaw) {
+          logger.warn('WS handshake rejected: session expired (ip=%s)', ip);
           wss.handleUpgrade(req, socket, head, (ws) => {
             ws.close(4001, 'Session expired or not found');
           });

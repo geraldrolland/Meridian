@@ -23,9 +23,11 @@ export function setAccessToken(token: string | null): void {
 }
 
 let refreshPromise: Promise<string | null> | null = null;
+let refreshBlockedUntil = 0;
 
 export async function refreshAccessToken(): Promise<string | null> {
   if (refreshPromise) return refreshPromise;
+  if (Date.now() < refreshBlockedUntil) return null;
 
   refreshPromise = (async () => {
     try {
@@ -34,6 +36,12 @@ export async function refreshAccessToken(): Promise<string | null> {
         credentials: "include",
         headers: { "Content-Type": "application/json" },
       });
+      if (res.status === 429) {
+        const retryAfter = Number(res.headers.get("Retry-After"));
+        const seconds = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 5;
+        refreshBlockedUntil = Date.now() + Math.min(30_000, Math.max(1_000, seconds * 1000));
+        return null;
+      }
       if (!res.ok) {
         setAccessToken(null);
         return null;
