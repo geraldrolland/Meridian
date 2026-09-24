@@ -131,7 +131,7 @@ media_processing_service/
     │   └── event.py            # Pydantic model for incoming Kafka events (timestamp: str)
     ├── routes/
     │   ├── health.py           # GET /health
-    │   └── ready.py            # GET /ready (checks DB + Redis)
+    │   └── ready.py            # GET /ready (unified multi-dependency readiness)
     └── tasks/
         ├── process_queued_jobs.py        # Download, segment, create TranscodeTasks
         ├── process_transcode_tasks.py    # Transcode segments into renditions
@@ -241,7 +241,7 @@ All settings are loaded from environment variables via `pydantic-settings`. Copy
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check (always returns 200) |
-| `GET` | `/ready` | Readiness check (verifies DB + Redis connectivity) |
+| `GET` | `/ready` | Readiness: Redis, DB, MinIO, RabbitMQ, Kafka (`{"status","checks"}`; 200/500) |
 
 ## Docker
 
@@ -274,6 +274,25 @@ celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo
 # Run Celery beat (scheduler)
 celery -A app.celery_app:celery_app beat --loglevel=info
 ```
+
+## Testing
+
+```bash
+cd media_processing_service
+python -m pytest tests/ -v
+```
+
+| Suite | Coverage |
+|-------|----------|
+| `test_ready.py` | Unified `/ready` shape + per-dependency failures |
+| `test_consumer.py` | Kafka consumer persistence |
+| `test_tasks.py` | Queued/transcode/upload/completion/failed/outbox Celery tasks |
+| `test_media_service.py` | Segmentation, transcoding, init segments, thumbnails |
+| `test_utils.py` | Object URL/key helpers, duration, framerate |
+| `test_smoke.py` | Imports and router wiring |
+| Load/perf | Optional autocannon / benchmark suites |
+
+Latest local run: **98 passed**.
 
 ## License
 

@@ -9,6 +9,7 @@ import { requestLogger, logger } from './middleware/logger';
 import { errorHandler } from './middleware/errorHandler';
 import proxyRouter from './proxy';
 import { createWsProxy } from './proxy/ws';
+import { readyHandler } from './routes/ready';
 
 const app = express();
 
@@ -25,6 +26,12 @@ app.use(cookieParser());
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+/**
+ * GET /ready — Readiness check: Redis + configured upstream /ready endpoints.
+ * Excluded from auth middleware via AUTH_EXCLUDE_PATHS.
+ */
+app.get('/ready', readyHandler);
 
 /**
  * Middleware pipeline order is critical:

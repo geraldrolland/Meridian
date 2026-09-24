@@ -5,6 +5,7 @@ const mockRedis = {
   incr: jest.fn().mockResolvedValue(1),
   expire: jest.fn().mockResolvedValue(1),
   ttl: jest.fn().mockResolvedValue(900),
+  ping: jest.fn().mockResolvedValue('PONG'),
   on: jest.fn(),
   connect: jest.fn().mockResolvedValue(undefined),
 };

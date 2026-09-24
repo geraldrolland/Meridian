@@ -96,6 +96,8 @@ class Video(SQLModel, table=True):
     num_of_retries: int = Field(default=0)
     notif_reference_id: str | None = Field(default=None, max_length=128, unique=True, nullable=True)
     thumbnail_url: str | None = Field(default=None, max_length=2048, nullable=True)
+    # Existing DBs: ALTER TABLE videos ADD COLUMN IF NOT EXISTS manifest_url VARCHAR(2048);
+    manifest_url: str | None = Field(default=None, max_length=2048, nullable=True)
     published: bool = Field(default=False)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None),

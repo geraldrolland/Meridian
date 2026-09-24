@@ -393,7 +393,7 @@ video_service/
 │   │   └── video.py           # Video SQLModel + VideoStatus enum (7 states, notif_reference_id)
 │   ├── routes/
 │   │   ├── video.py           # Upload, complete, abort, get, retry, WS endpoints
-│   │   └── ready.py           # Database readiness probe
+│   │   └── ready.py           # GET /ready (unified multi-dependency readiness)
 │   └── utils/
 │       └── notification_utils.py  # build_object_url, build_id, extract_video_id
 ├── tests/

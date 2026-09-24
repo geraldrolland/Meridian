@@ -29,6 +29,7 @@ async def consume_manifest_completed_messages(consumer: AIOKafkaConsumer) -> Non
 
                 event_dict: dict[str, Any] = json.loads(raw_value.decode("utf-8"))
                 video_id = event_dict.get("video_id")
+                manifest_url = event_dict.get("manifest_url")
 
                 if not video_id:
                     logger.warning("[manifest-completed] Missing video_id in event, skipping")
@@ -48,10 +49,13 @@ async def consume_manifest_completed_messages(consumer: AIOKafkaConsumer) -> Non
                         )
                     else:
                         video.status = VideoStatus.COMPLETED.value
+                        if manifest_url:
+                            video.manifest_url = manifest_url
                         await session.commit()
                         logger.info(
-                            "[manifest-completed] Video %s status set to COMPLETED",
+                            "[manifest-completed] Video %s status set to COMPLETED, manifest_url=%s",
                             video_id,
+                            video.manifest_url,
                         )
 
                         if video.user_id is not None:

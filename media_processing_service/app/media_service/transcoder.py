@@ -4,9 +4,8 @@ import logging
 import os
 import subprocess
 
-import ffmpeg
-
 from app.config import settings
+from app.utils import get_video_framerate
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +28,6 @@ class MediaTranscoder:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
-
-    def __get_input_fps(self) -> float:
-        """Detect the frame rate of the input video via ffprobe."""
-        probe = ffmpeg.probe(self.input_file)
-        video_stream = next(
-            s for s in probe["streams"] if s["codec_type"] == "video"
-        )
-        r_frame_rate: str = video_stream["r_frame_rate"]
-        num, den = map(int, r_frame_rate.split("/"))
-        return num / den
 
     def __extract_audio(self) -> bytes:
         """Extract the audio stream from the input file (copy, no re-encode)."""
@@ -71,7 +60,7 @@ class MediaTranscoder:
         frames to Process 2, which transcodes them to H.264 and outputs
         MP4 bytes.
         """
-        fps = self.__get_input_fps()
+        fps = get_video_framerate(self.input_file)
 
         # Process 1: frame reader — input file → raw RGB24 on stdout
         process1 = subprocess.Popen(

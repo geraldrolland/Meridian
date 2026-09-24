@@ -2,7 +2,6 @@
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from app.celery_app import celery_app
@@ -14,7 +13,7 @@ from app.models.outbox import Outbox
 from app.models.transcode_task import TranscodeTask
 from app.models.upload_task import UploadTask, UploadStatus
 from app.config import settings
-from app.utils import resolve_object_key, build_object_url, get_video_duration
+from app.utils import resolve_object_key, build_object_url, get_video_duration, get_video_framerate
 
 logger = logging.getLogger(__name__)
 
@@ -45,14 +44,11 @@ def process_completed_jobs():
     """
     session = get_sync_session()
     try:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-
         completed_jobs = (
             session.query(Job)
             .filter(
                 Job.status == JobStatus.COMPLETED.value,
                 Job.published == False,  # noqa: E712
-                (Job.retry_after.is_(None)) | (Job.retry_after < now),
             )
             .limit(50)
             .all()
@@ -103,6 +99,7 @@ def process_completed_jobs():
                 manifest_metadata = {
                     "manifest_type": "static",
                     "video_duration": get_video_duration(video_file_path),
+                    "framerate": get_video_framerate(video_file_path),
                     "segment_duration": settings.segment_duration,
                     "renditions": settings.renditions,
                     "media_prefix": f"{settings.minio_segment_bucket}/{job.video_id}/",
@@ -124,8 +121,10 @@ def process_completed_jobs():
                     payload={
                         "video_id": job.video_id,
                         "job_id": job.id,
+                        "origin_service": "media_processing_service",
                         "thumbnail_url": job.vid_thumbnail_url,
                         "manifest_metadata": manifest_metadata,
+
                     },
                 )
                 session.add(outbox)

@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from app.utils import build_object_url, resolve_object_key, get_video_duration
+from app.utils import build_object_url, resolve_object_key, get_video_duration, get_video_framerate
 
 
 class TestBuildObjectUrl:
@@ -100,3 +100,32 @@ class TestGetVideoDuration:
     def test_integer_duration(self, mock_probe):
         mock_probe.return_value = {"format": {"duration": "60"}}
         assert get_video_duration("/tmp/video.mp4") == 60.0
+
+
+class TestGetVideoFramerate:
+    """Tests for get_video_framerate."""
+
+    @patch("app.utils.ffmpeg.probe")
+    def test_returns_framerate(self, mock_probe):
+        mock_probe.return_value = {
+            "streams": [{"codec_type": "video", "r_frame_rate": "30/1"}]
+        }
+        assert get_video_framerate("/tmp/video.mp4") == 30.0
+
+    @patch("app.utils.ffmpeg.probe")
+    def test_ntsc_framerate(self, mock_probe):
+        mock_probe.return_value = {
+            "streams": [{"codec_type": "video", "r_frame_rate": "30000/1001"}]
+        }
+        result = get_video_framerate("/tmp/video.mp4")
+        assert abs(result - 29.97) < 0.01
+
+    @patch("app.utils.ffmpeg.probe")
+    def test_picks_video_stream_over_audio(self, mock_probe):
+        mock_probe.return_value = {
+            "streams": [
+                {"codec_type": "audio"},
+                {"codec_type": "video", "r_frame_rate": "24/1"},
+            ]
+        }
+        assert get_video_framerate("/tmp/video.mp4") == 24.0

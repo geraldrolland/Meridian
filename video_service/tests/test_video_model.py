@@ -81,6 +81,14 @@ class TestVideoModel:
         video = Video(filename="test.mp4", thumbnail_url="http://minio/vidthumbnails/thumb.jpg")
         assert video.thumbnail_url == "http://minio/vidthumbnails/thumb.jpg"
 
+    def test_manifest_url_defaults_to_none(self):
+        video = Video(filename="test.mp4")
+        assert video.manifest_url is None
+
+    def test_manifest_url_can_be_set(self):
+        video = Video(filename="test.mp4", manifest_url="http://minio:9000/manifest/vid1/manifest_abc.mpd")
+        assert video.manifest_url == "http://minio:9000/manifest/vid1/manifest_abc.mpd"
+
 
 class TestUploadRequestModel:
     def test_upload_request_schema(self):

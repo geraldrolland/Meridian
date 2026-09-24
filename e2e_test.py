@@ -5,7 +5,8 @@
 Covers: invalid route, register, login, refresh, /me, upload video,
 MinIO bucket notification, DB verification, outbox event, full
 processing pipeline (segmentation, transcoding, upload, completion),
-and logout.
+manifest generation → video COMPLETED + manifest_url, a simulated DASH
+player that downloads the MPD and each segment sequentially, and logout.
 
 Usage:
     python e2e_test.py
@@ -14,10 +15,13 @@ Usage:
 import hashlib
 import hmac
 import json
+import math
 import os
+import re
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from urllib.parse import quote
 from io import BytesIO
 
@@ -37,7 +41,10 @@ MINIO_SECRET_KEY = "minioadmin"
 PROXY_SECRET = "test-proxy-secret"
 DB_DSN = "host=localhost port=5434 dbname=video_db user=postgres password=postgres"
 MEDIA_DB_DSN = "host=localhost port=5435 dbname=media_processing_db user=postgres password=postgres"
+MANIFEST_DB_DSN = "host=localhost port=5436 dbname=manifest_db user=postgres password=postgres"
 SEGMENT_BUCKET = "vidsegments"
+MANIFEST_BUCKET = "manifest"
+DASH_NS = "urn:mpeg:dash:schema:mpd:2011"
 
 
 def _proxy_sign(method: str, path: str, secret: str = PROXY_SECRET) -> dict[str, str]:
@@ -78,10 +85,129 @@ def _minio_client() -> Minio:
     )
 
 
+def _rewrite_minio_url(url: str) -> str:
+    """Rewrite in-cluster MinIO URLs to the host-reachable endpoint."""
+    return url.replace("http://minio:9000", f"http://{MINIO_ENDPOINT}")
+
+
+def _parse_iso_duration(value: str) -> float:
+    """Parse a subset of ISO 8601 durations used by the MPD (PT12.5S)."""
+    m = re.fullmatch(r"PT(\d+(?:\.\d+)?)S", value or "")
+    if not m:
+        raise ValueError(f"Unsupported ISO duration: {value!r}")
+    return float(m.group(1))
+
+
+def _parse_dash_plan(mpd_xml: bytes) -> dict:
+    """Parse an MPD and return a DASH playback plan for a preferred video rendition.
+
+    Returns dict with: rep_id, init_template, media_template, start_number,
+    segment_duration_sec, duration_sec, n_segments.
+    """
+    root = ET.fromstring(mpd_xml)
+    duration_attr = root.get("mediaPresentationDuration", "")
+    duration_sec = _parse_iso_duration(duration_attr)
+
+    representations = root.findall(f".//{{{DASH_NS}}}Representation")
+    if not representations:
+        raise AssertionError("MPD has no Representation elements")
+
+    by_id = {r.get("id"): r for r in representations if r.get("id")}
+    preferred = None
+    for cand in ("360p", "480p", "720p", "1080p"):
+        if cand in by_id:
+            preferred = by_id[cand]
+            break
+    if preferred is None:
+        preferred = representations[0]
+    rep_id = preferred.get("id")
+    if not rep_id:
+        raise AssertionError("MPD Representation missing id")
+
+    # SegmentTemplate may live on Representation or parent AdaptationSet
+    tmpl = preferred.find(f"{{{DASH_NS}}}SegmentTemplate")
+    if tmpl is None:
+        for aset in root.findall(f".//{{{DASH_NS}}}AdaptationSet"):
+            if preferred in list(aset.findall(f"{{{DASH_NS}}}Representation")):
+                tmpl = aset.find(f"{{{DASH_NS}}}SegmentTemplate")
+                break
+    if tmpl is None:
+        tmpl = root.find(f".//{{{DASH_NS}}}SegmentTemplate")
+    if tmpl is None:
+        raise AssertionError("MPD missing SegmentTemplate")
+
+    init_tpl = tmpl.get("initialization")
+    media_tpl = tmpl.get("media")
+    start_number = int(tmpl.get("startNumber", "1"))
+    timescale = int(tmpl.get("timescale", "1"))
+    seg_duration_ts = int(tmpl.get("duration", "0"))
+    if not init_tpl or not media_tpl or seg_duration_ts <= 0:
+        raise AssertionError("SegmentTemplate missing initialization/media/duration")
+
+    segment_duration_sec = seg_duration_ts / timescale
+    n_segments = max(1, math.ceil(duration_sec / segment_duration_sec))
+
+    return {
+        "rep_id": rep_id,
+        "init_template": init_tpl,
+        "media_template": media_tpl,
+        "start_number": start_number,
+        "segment_duration_sec": segment_duration_sec,
+        "duration_sec": duration_sec,
+        "n_segments": n_segments,
+    }
+
+
+def _dash_download_all(mpd_url: str) -> None:
+    """Simulate a DASH player: fetch MPD, init segment, then each media segment in order."""
+    mpd_http = _rewrite_minio_url(mpd_url)
+    r = requests.get(mpd_http, timeout=30)
+    _assert(r.status_code == 200, f"MPD downloaded (got {r.status_code})")
+    _assert(b"<MPD" in r.content, "response body contains <MPD")
+
+    plan = _parse_dash_plan(r.content)
+    rep_id = plan["rep_id"]
+    print(
+        f"  DASH plan: rep={rep_id}, segments={plan['n_segments']}, "
+        f"seg_dur={plan['segment_duration_sec']}s, duration={plan['duration_sec']}s"
+    )
+
+    base = f"http://{MINIO_ENDPOINT}"
+    init_path = plan["init_template"].replace("$RepresentationID$", rep_id)
+    if not init_path.startswith("/"):
+        init_path = "/" + init_path
+    init_url = base + init_path
+    ir = requests.get(init_url, timeout=30)
+    _assert(ir.status_code == 200, f"init.mp4 downloaded (got {ir.status_code})")
+    _assert(len(ir.content) > 0, "init.mp4 non-empty")
+    print(f"  init.mp4: {len(ir.content)} bytes")
+
+    total_bytes = len(ir.content)
+    downloaded = 0
+    for n in range(plan["start_number"], plan["start_number"] + plan["n_segments"]):
+        seg_path = (
+            plan["media_template"]
+            .replace("$RepresentationID$", rep_id)
+            .replace("$Number$", str(n))
+        )
+        if not seg_path.startswith("/"):
+            seg_path = "/" + seg_path
+        seg_url = base + seg_path
+        sr = requests.get(seg_url, timeout=30)
+        _assert(sr.status_code == 200, f"segment seg_{n}.m4s downloaded (got {sr.status_code})")
+        _assert(len(sr.content) > 0, f"segment seg_{n}.m4s non-empty")
+        total_bytes += len(sr.content)
+        downloaded += 1
+        print(f"  segment {n}: {len(sr.content)} bytes")
+
+    _assert(downloaded == plan["n_segments"], f"all {plan['n_segments']} segments downloaded")
+    print(f"  DASH player fetched {downloaded} segments + init, total {total_bytes} bytes")
+
+
 # ── Step 0: Ensure MinIO buckets exist ─────────────────────────────
 print("\n[0] Ensure MinIO buckets exist")
 mc = _minio_client()
-for bucket in ["viduploads", "vidsegments", "vidthumbnails"]:
+for bucket in ["viduploads", "vidsegments", "vidthumbnails", "manifest"]:
     if not mc.bucket_exists(bucket):
         mc.make_bucket(bucket)
         print(f"  Created bucket: {bucket}")
@@ -409,7 +535,7 @@ for _ in range(60):
 _assert(outbox_completed, "job.completed outbox event published")
 
 
-# ── Step 17: Verify cleanup ────────────────────────────────────────
+# ── Step 16: Verify cleanup ────────────────────────────────────────
 print("\n[16] Verify cleanup — /tmp/{segments,transcoded,downloads,thumbnails}/{video_id} should be removed")
 TEMP_DIRS = ["/tmp/segments", "/tmp/transcoded", "/tmp/downloads", "/tmp/thumbnails"]
 all_cleaned = False
@@ -431,6 +557,141 @@ _assert(all_cleaned, f"all temp dirs cleaned for {video_id} (still present: {rem
 
 
 # ══════════════════════════════════════════════════════════════════
+# MANIFEST PIPELINE — media → manifest → video COMPLETED + manifest_url
+# ══════════════════════════════════════════════════════════════════
+
+manifest_conn = psycopg2.connect(MANIFEST_DB_DSN)
+manifest_conn.autocommit = True
+man_cur = manifest_conn.cursor()
+
+
+# ── Step 17: Poll manifest_tasks → completed + manifest_url ────────
+print("\n[17] Poll manifest_tasks (manifest-db) → expect completed + manifest_url (120s)")
+manifest_task_row = None
+for _ in range(120):
+    man_cur.execute(
+        "SELECT id, status, manifest_url FROM manifest_tasks "
+        "WHERE video_id = %s ORDER BY created_at DESC LIMIT 1",
+        (video_id,),
+    )
+    manifest_task_row = man_cur.fetchone()
+    if manifest_task_row and manifest_task_row[1] == "completed" and manifest_task_row[2]:
+        print(f"  Manifest task {manifest_task_row[0]} status=completed")
+        print(f"  manifest_url={manifest_task_row[2]}")
+        break
+    time.sleep(1)
+_assert(
+    manifest_task_row is not None
+    and manifest_task_row[1] == "completed"
+    and bool(manifest_task_row[2]),
+    "manifest task completed with manifest_url",
+)
+manifest_url = manifest_task_row[2]
+
+
+# ── Step 18: Verify MPD object exists in MinIO ─────────────────────
+print("\n[18] Verify MPD exists in MinIO manifest bucket")
+# URL: http://minio:9000/manifest/{video_id}/manifest_{uuid8}.mpd
+url_parts = manifest_url.split("/", 3)
+_assert(len(url_parts) >= 4, f"manifest_url has bucket+key form (got {manifest_url})")
+# parts: ['http:', '', 'minio:9000', 'manifest/{id}/file.mpd']
+bucket_and_key = url_parts[3]
+mpd_bucket, mpd_key = bucket_and_key.split("/", 1)
+_assert(mpd_bucket == MANIFEST_BUCKET, f"manifest bucket={MANIFEST_BUCKET} (got {mpd_bucket})")
+mc = _minio_client()
+if not mc.bucket_exists(MANIFEST_BUCKET):
+    mc.make_bucket(MANIFEST_BUCKET)
+stat = mc.stat_object(mpd_bucket, mpd_key)
+_assert(stat.size > 0, f"MPD object non-empty ({stat.size} bytes)")
+
+
+# ── Step 19: Poll manifest.completed outbox (manifest-db) ──────────
+print("\n[19] Poll outbox (manifest-db) → expect manifest.completed published (90s)")
+mc_outbox_completed = False
+mc_payload = None
+for _ in range(90):
+    man_cur.execute(
+        "SELECT id, topic, status, payload FROM outbox "
+        "WHERE topic = 'manifest.completed' AND status = 'PROCESSED' "
+        "AND payload->>'video_id' = %s "
+        "ORDER BY created_at DESC LIMIT 1",
+        (video_id,),
+    )
+    row = man_cur.fetchone()
+    if row:
+        mc_outbox_completed = True
+        mc_payload = row[3] if isinstance(row[3], dict) else json.loads(row[3])
+        print(f"  Found outbox id={row[0]}, topic={row[1]}, status={row[2]}")
+        print(f"  payload.manifest_url={mc_payload.get('manifest_url')}")
+        break
+    time.sleep(1)
+_assert(mc_outbox_completed, "manifest.completed outbox event published")
+_assert(
+    mc_payload is not None and mc_payload.get("manifest_url") == manifest_url,
+    "manifest.completed payload includes matching manifest_url",
+)
+
+
+# ── Step 20: Poll video DB → COMPLETED + manifest_url set ──────────
+print("\n[20] Poll videos (video-db) → expect status=COMPLETED and manifest_url set (90s)")
+video_completed = False
+stored_manifest_url = None
+for _ in range(90):
+    vcur = conn.cursor()
+    vcur.execute(
+        "SELECT status, manifest_url FROM videos WHERE id = %s",
+        (video_id,),
+    )
+    row = vcur.fetchone()
+    vcur.close()
+    if row and row[0] == "COMPLETED" and row[1]:
+        video_completed = True
+        stored_manifest_url = row[1]
+        print(f"  Video status=COMPLETED, manifest_url={stored_manifest_url}")
+        break
+    time.sleep(1)
+_assert(video_completed, "video status=COMPLETED with manifest_url persisted")
+_assert(stored_manifest_url == manifest_url, "video.manifest_url matches manifest task URL")
+
+
+# ── Step 21: GET video via API → includes manifest_url ─────────────
+print("\n[21] GET /api/video/{id} → expect manifest_url in response")
+# Reuse session cookie from earlier login if still valid; rebuild if needed
+try:
+    session_cookie
+except NameError:
+    session_cookie = None
+if not session_cookie:
+    # re-login
+    r = requests.post(
+        f"{API_GATEWAY}/api/auth/login",
+        json={"email": "e2e@example.com", "password": "E2eTest!123"},
+    )
+    _assert(r.status_code == 200, "re-login for video GET")
+    session_cookie = "; ".join(f"{k}={v}" for k, v in _parse_cookies(r).items())
+
+sign_headers = _proxy_sign("GET", f"/api/video/{video_id}")
+r = requests.get(
+    f"{VIDEO_SERVICE}/api/video/{video_id}",
+    headers={**sign_headers, "Cookie": session_cookie, "Content-Type": "application/json"},
+)
+_assert(r.status_code == 200, f"GET video status=200 (got {r.status_code})")
+body = r.json()
+_assert(body.get("manifest_url") == manifest_url, "API response includes manifest_url")
+_assert(body.get("status") == "COMPLETED", "API response status=COMPLETED")
+
+
+# ── Step 22: Simulated DASH player — MPD + sequential segments ─────
+print("\n[22] DASH player — download MPD, init.mp4, then each segment sequentially")
+_dash_download_all(manifest_url)
+
+
+# Cleanup manifest DB connection
+man_cur.close()
+manifest_conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════
 # FAILED JOB FLOW — process_failed_jobs
 # ══════════════════════════════════════════════════════════════════
 
@@ -441,8 +702,8 @@ FAILED_UPLOAD_ID = "ut-failed-e2e"
 FAILED_OBJ_KEY = f"{FAILED_VIDEO_ID}/720p/seg_1.m4s"
 
 
-# ── Step 19a: Seed FAILED job + video via SQL ──────────────────────
-print("\n[19a] Seed FAILED job + video via SQL")
+# ── Step 23a: Seed FAILED job + video via SQL ──────────────────────
+print("\n[23a] Seed FAILED job + video via SQL")
 
 # Clean up any leftover data from previous runs
 vcur = conn.cursor()
@@ -464,7 +725,7 @@ for obj in mc.list_objects(SEGMENT_BUCKET, prefix=f"{FAILED_VIDEO_ID}/", recursi
 
 # Upload fake object BEFORE seeding the job to avoid race condition
 # with celery worker processing the job before the object exists
-print(f"\n[19a-pre] Upload fake object to {SEGMENT_BUCKET}/{FAILED_OBJ_KEY}")
+print(f"\n[23a-pre] Upload fake object to {SEGMENT_BUCKET}/{FAILED_OBJ_KEY}")
 import io as _io
 fake_data = b"fake-transcoded-segment"
 mc.put_object(
@@ -512,8 +773,8 @@ mcur.close()
 print(f"  Inserted job={FAILED_JOB_ID}, transcode={FAILED_TRANSCODE_ID}, upload={FAILED_UPLOAD_ID}")
 
 
-# ── Step 19c: Poll process_failed_jobs → job.published=True (60s) ──
-print("\n[19c] Poll process_failed_jobs → expect job.published=True within 60s")
+# ── Step 23c: Poll process_failed_jobs → job.published=True (60s) ──
+print("\n[23c] Poll process_failed_jobs → expect job.published=True within 60s")
 mcur = media_conn.cursor()
 job_published = False
 for _ in range(60):
@@ -528,8 +789,8 @@ mcur.close()
 _assert(job_published, "process_failed_jobs set job.published=True")
 
 
-# ── Step 19d: Verify outbox event job.failed published (60s) ───────
-print("\n[19d] Poll outbox (media-processing-db) → expect job.failed published within 60s")
+# ── Step 23d: Verify outbox event job.failed published (60s) ───────
+print("\n[23d] Poll outbox (media-processing-db) → expect job.failed published within 60s")
 mcur = media_conn.cursor()
 failed_outbox_published = False
 for _ in range(60):
@@ -551,8 +812,8 @@ mcur.close()
 _assert(failed_outbox_published, "job.failed outbox event published")
 
 
-# ── Step 19e: Verify objects cleaned from vidsegments ──────────────
-print(f"\n[19e] Verify objects cleaned from {SEGMENT_BUCKET}/{FAILED_VIDEO_ID}/")
+# ── Step 23e: Verify objects cleaned from vidsegments ──────────────
+print(f"\n[23e] Verify objects cleaned from {SEGMENT_BUCKET}/{FAILED_VIDEO_ID}/")
 objects_cleaned = False
 for i in range(30):
     objects_after = list(mc.list_objects(SEGMENT_BUCKET, prefix=f"{FAILED_VIDEO_ID}/", recursive=True))
@@ -566,8 +827,8 @@ _assert(objects_cleaned,
         f"failed job objects cleaned from {SEGMENT_BUCKET} (still {len(objects_after)} objects: {[o.object_name for o in objects_after]})")
 
 
-# ── Step 19f: Verify video service received job.failed → video FAILED
-print("\n[19f] Poll videos table (video-db) → expect status=FAILED within 30s")
+# ── Step 23f: Verify video service received job.failed → video FAILED
+print("\n[23f] Poll videos table (video-db) → expect status=FAILED within 30s")
 video_failed = False
 for _ in range(30):
     vcur = conn.cursor()
@@ -582,8 +843,8 @@ for _ in range(30):
 _assert(video_failed, "video service received job.failed and set video status=FAILED")
 
 
-# ── Step 19g: Cleanup seeded data ──────────────────────────────────
-print("\n[19g] Cleanup seeded test data")
+# ── Step 23g: Cleanup seeded data ──────────────────────────────────
+print("\n[23g] Cleanup seeded test data")
 vcur = conn.cursor()
 vcur.execute("DELETE FROM videos WHERE id = %s", (FAILED_VIDEO_ID,))
 conn.commit()
@@ -606,8 +867,8 @@ print("  Seeded data cleaned up")
 RETRY_VIDEO_ID = "retry-e2e-video"
 
 
-# ── Step 21a: Seed video with status=RETRY ─────────────────────────
-print("\n[21a] Seed video with status=RETRY via SQL")
+# ── Step 24a: Seed video with status=RETRY ─────────────────────────
+print("\n[24a] Seed video with status=RETRY via SQL")
 
 vcur = conn.cursor()
 vcur.execute("DELETE FROM videos WHERE id = %s", (RETRY_VIDEO_ID,))
@@ -623,8 +884,8 @@ vcur.close()
 print(f"  Inserted video {RETRY_VIDEO_ID} with status=RETRY, num_of_retries=2")
 
 
-# ── Step 21b: GET video → expect status=RETRY ─────────────────────
-print("\n[21b] GET /api/video/{video_id} → expect status=RETRY")
+# ── Step 24b: GET video → expect status=RETRY ─────────────────────
+print("\n[24b] GET /api/video/{video_id} → expect status=RETRY")
 sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}")
 r = requests.get(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
@@ -636,8 +897,8 @@ _assert(r.json()["published"] is False, "published=false")
 print(f"  Video status={r.json()['status']}, published={r.json()['published']}")
 
 
-# ── Step 21c: POST /retry → expect 200 + status=QUEUED ────────────
-print("\n[21c] POST /api/video/{video_id}/retry → expect 200 + status=QUEUED")
+# ── Step 24c: POST /retry → expect 200 + status=QUEUED ────────────
+print("\n[24c] POST /api/video/{video_id}/retry → expect 200 + status=QUEUED")
 sign_headers = _proxy_sign("POST", f"/api/video/{RETRY_VIDEO_ID}/retry")
 r = requests.post(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}/retry",
@@ -650,8 +911,8 @@ _assert(r.json()["num_of_retries"] == 3, f"num_of_retries=3 (got {r.json()['num_
 print(f"  Retry succeeded: status={r.json()['status']}, published={r.json()['published']}, num_of_retries={r.json()['num_of_retries']}")
 
 
-# ── Step 21d: GET video → confirm QUEUED ──────────────────────────
-print("\n[21d] GET /api/video/{video_id} → confirm status=QUEUED")
+# ── Step 24d: GET video → confirm QUEUED ──────────────────────────
+print("\n[24d] GET /api/video/{video_id} → confirm status=QUEUED")
 sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}")
 r = requests.get(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
@@ -662,8 +923,8 @@ _assert(r.json()["status"] == "QUEUED", f"status=QUEUED (got {r.json()['status']
 print(f"  Confirmed: status={r.json()['status']}")
 
 
-# ── Step 21e: POST /retry again → expect 400 (not RETRY) ──────────
-print("\n[21e] POST /api/video/{video_id}/retry (already QUEUED) → expect 400")
+# ── Step 24e: POST /retry again → expect 400 (not RETRY) ──────────
+print("\n[24e] POST /api/video/{video_id}/retry (already QUEUED) → expect 400")
 sign_headers = _proxy_sign("POST", f"/api/video/{RETRY_VIDEO_ID}/retry")
 r = requests.post(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}/retry",
@@ -674,8 +935,8 @@ _assert("not in RETRY" in r.json()["detail"], f"error mentions RETRY (got {r.jso
 print(f"  Correctly rejected: {r.json()['detail']}")
 
 
-# ── Step 21f: POST /retry on nonexistent video → expect 404 ───────
-print("\n[21f] POST /api/video/nonexistent/retry → expect 404")
+# ── Step 24f: POST /retry on nonexistent video → expect 404 ────────
+print("\n[24f] POST /api/video/nonexistent/retry → expect 404")
 sign_headers = _proxy_sign("POST", "/api/video/nonexistent/retry")
 r = requests.post(
     f"{VIDEO_SERVICE}/api/video/nonexistent/retry",
@@ -685,8 +946,8 @@ _assert(r.status_code == 404, f"status=404 (got {r.status_code})")
 print(f"  Correctly returned 404")
 
 
-# ── Step 21g: GET with status filter mismatch → expect 404 ────────
-print("\n[21g] GET /api/video/{video_id}?status=COMPLETED → expect 404")
+# ── Step 24g: GET with status filter mismatch → expect 404 ─────────
+print("\n[24g] GET /api/video/{video_id}?status=COMPLETED → expect 404")
 sign_headers = _proxy_sign("GET", f"/api/video/{RETRY_VIDEO_ID}")
 r = requests.get(
     f"{VIDEO_SERVICE}/api/video/{RETRY_VIDEO_ID}",
@@ -697,8 +958,8 @@ _assert(r.status_code == 404, f"status=404 (got {r.status_code})")
 print(f"  Status filter correctly rejected mismatch")
 
 
-# ── Step 21h: Cleanup retry test data ─────────────────────────────
-print("\n[21h] Cleanup retry test data")
+# ── Step 24h: Cleanup retry test data ──────────────────────────────
+print("\n[24h] Cleanup retry test data")
 vcur = conn.cursor()
 vcur.execute("DELETE FROM videos WHERE id = %s", (RETRY_VIDEO_ID,))
 conn.commit()
@@ -711,8 +972,8 @@ media_conn.close()
 conn.close()
 
 
-# ── Step 22: Logout ───────────────────────────────────────────────
-print("\n[22] POST /api/auth/logout → expect 200")
+# ── Step 25: Logout ───────────────────────────────────────────────
+print("\n[25] POST /api/auth/logout → expect 200")
 r = requests.post(
     f"{API_GATEWAY}/api/auth/logout",
     headers={"Authorization": f"Bearer {access_token}"},

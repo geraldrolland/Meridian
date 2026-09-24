@@ -4,9 +4,8 @@ import logging
 import os
 import subprocess
 
-import ffmpeg
-
 from app.config import settings
+from app.utils import get_video_framerate
 
 logger = logging.getLogger(__name__)
 
@@ -22,16 +21,6 @@ class GenerateInit:
         self.input_file = input_file
         self.output_dir = output_dir
         self.representation = representation
-
-    def __get_input_fps(self) -> float:
-        """Detect the frame rate of the input video via ffprobe."""
-        probe = ffmpeg.probe(self.input_file)
-        video_stream = next(
-            s for s in probe["streams"] if s["codec_type"] == "video"
-        )
-        r_frame_rate: str = video_stream["r_frame_rate"]
-        num, den = map(int, r_frame_rate.split("/"))
-        return num / den
 
     def __generate_audio_init(self, out_path: str) -> None:
         """Generate a CMAF init segment for the audio stream."""
@@ -64,7 +53,7 @@ class GenerateInit:
         Returns:
             List of paths to the generated init files (video renditions + audio).
         """
-        fps = self.__get_input_fps()
+        fps = get_video_framerate(self.input_file)
         os.makedirs(self.output_dir, exist_ok=True)
 
         init_paths: list[str] = []

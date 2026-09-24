@@ -240,11 +240,16 @@ Authorization: Bearer <accessToken>
 GET /ready
 ```
 
-Returns database connectivity status. Used by container orchestrators.
+Returns unified readiness status for orchestrators. HTTP 200 when all dependencies are healthy, 500 otherwise.
 
 **Response (200):**
 ```json
-{ "status": "ok", "database": "connected" }
+{ "status": "ok", "checks": { "db": "ok", "redis": "ok" } }
+```
+
+**Response (500):**
+```json
+{ "status": "not_ok", "checks": { "db": "ok", "redis": "not_ok" } }
 ```
 
 | Status | Condition |

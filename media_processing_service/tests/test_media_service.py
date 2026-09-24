@@ -114,13 +114,9 @@ class TestMediaTranscoder:
 
     @patch("app.media_service.transcoder.os.makedirs")
     @patch("builtins.open", new_callable=MagicMock)
-    @patch("app.media_service.transcoder.ffmpeg.probe")
+    @patch("app.media_service.transcoder.get_video_framerate", return_value=30.0)
     @patch("app.media_service.transcoder.subprocess.Popen")
-    def test_run_transcoder_all_renditions(self, mock_popen, mock_probe, mock_open, mock_makedirs):
-        mock_probe.return_value = {
-            "streams": [{"codec_type": "video", "r_frame_rate": "30/1"}]
-        }
-
+    def test_run_transcoder_all_renditions(self, mock_popen, mock_get_framerate, mock_open, mock_makedirs):
         mock_process = MagicMock()
         mock_process.communicate.return_value = (b"video_bytes", b"")
         mock_process.returncode = 0
@@ -133,17 +129,13 @@ class TestMediaTranscoder:
         assert isinstance(paths, list)
         assert len(paths) == 5
         assert all(p.endswith("video.m4s") for p in paths)
-        assert mock_probe.called
+        assert mock_get_framerate.called
 
     @patch("app.media_service.transcoder.os.makedirs")
     @patch("builtins.open", new_callable=MagicMock)
-    @patch("app.media_service.transcoder.ffmpeg.probe")
+    @patch("app.media_service.transcoder.get_video_framerate", return_value=30.0)
     @patch("app.media_service.transcoder.subprocess.Popen")
-    def test_audio_extraction_failure(self, mock_popen, mock_probe, mock_open, mock_makedirs):
-        mock_probe.return_value = {
-            "streams": [{"codec_type": "video", "r_frame_rate": "30/1"}]
-        }
-
+    def test_audio_extraction_failure(self, mock_popen, mock_get_framerate, mock_open, mock_makedirs):
         mock_process = MagicMock()
         mock_process.communicate.return_value = (b"", b"error")
         mock_process.returncode = 1
@@ -283,15 +275,9 @@ class TestGenerateInit:
         assert g.output_dir == "/out"
         assert g.representation == ["360p", "720p"]
 
-    @patch("app.media_service.generate_init.ffmpeg.probe")
+    @patch("app.media_service.generate_init.get_video_framerate", return_value=30.0)
     @patch("app.media_service.generate_init.subprocess.Popen")
-    def test_generate_init_file(self, mock_popen, mock_probe):
-        mock_probe.return_value = {
-            "streams": [
-                {"codec_type": "video", "r_frame_rate": "30/1"},
-                {"codec_type": "audio"},
-            ]
-        }
+    def test_generate_init_file(self, mock_popen, mock_get_framerate):
         mock_process = MagicMock()
         mock_process.communicate.return_value = (b"", b"")
         mock_process.returncode = 0
@@ -305,13 +291,11 @@ class TestGenerateInit:
         assert paths[1].endswith(os.path.join("480p", "init.mp4"))
         assert paths[2].endswith(os.path.join("audio", "init.mp4"))
         assert mock_popen.call_count == 3
+        assert mock_get_framerate.called
 
-    @patch("app.media_service.generate_init.ffmpeg.probe")
+    @patch("app.media_service.generate_init.get_video_framerate", return_value=30.0)
     @patch("app.media_service.generate_init.subprocess.Popen")
-    def test_generate_init_failure(self, mock_popen, mock_probe):
-        mock_probe.return_value = {
-            "streams": [{"codec_type": "video", "r_frame_rate": "30/1"}]
-        }
+    def test_generate_init_failure(self, mock_popen, mock_get_framerate):
         mock_process = MagicMock()
         mock_process.communicate.return_value = (b"", b"error")
         mock_process.returncode = 1

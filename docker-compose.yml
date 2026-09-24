@@ -15,7 +15,7 @@ services:
       - JWT_SECRET=test-secret
       - PROXY_SECRET=test-proxy-secret
       - LOG_LEVEL=info
-      - AUTH_EXCLUDE_PATHS=/health,/api/auth/refresh-token,/api/auth/login,/api/auth/register
+      - AUTH_EXCLUDE_PATHS=/health,/ready,/api/auth/refresh-token,/api/auth/login,/api/auth/register
       - RATE_LIMIT_WINDOW_MS=900000
       - RATE_LIMIT_MAX=100
       - ROUTES=[{"prefix":"/api/auth","target":"http://auth-service:4000"},{"prefix":"/api/video","target":"http://video-service:8000"}]
@@ -24,6 +24,12 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/ready', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - meridian
     restart: unless-stopped
@@ -54,6 +60,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4000/ready', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - meridian
     restart: unless-stopped
@@ -190,6 +202,7 @@ services:
       /bin/sh -c "
       mc alias set myminio http://minio:9000 minioadmin minioadmin &&
       mc mb --ignore-existing myminio/viduploads &&
+      mc mb --ignore-existing myminio/manifest &&
       mc event add myminio/viduploads arn:minio:sqs::1:kafka --event put -p &&
       echo 'MinIO bucket and notification configured'
       "
@@ -448,12 +461,136 @@ services:
       - meridian
     restart: unless-stopped
 
+  manifest-db:
+    image: postgres:16-alpine
+    container_name: meridian-manifest-db
+    environment:
+      POSTGRES_DB: manifest_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5436:5432"
+    volumes:
+      - manifest_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d manifest_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - meridian
+    restart: unless-stopped
+
+  manifest-service:
+    build:
+      context: ./manifest_service
+      dockerfile: Dockerfile
+    container_name: meridian-manifest-service
+    ports:
+      - "8002:8002"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=job.completed
+      - KAFKA_CONSUMER_GROUP_ID=meridian-manifest-consumer-group
+      - KAFKA_AUTO_OFFSET_RESET=earliest
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@manifest-db:5432/manifest_db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      manifest-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - meridian
+    restart: unless-stopped
+
+  manifest-celery-worker:
+    build:
+      context: ./manifest_service
+      dockerfile: Dockerfile.celery
+    container_name: meridian-manifest-celery-worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@manifest-db:5432/manifest_db
+      - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - LOG_LEVEL=info
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=false
+    command: celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo -Q manifest
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      manifest-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - meridian
+    restart: unless-stopped
+
+  manifest-celery-beat:
+    build:
+      context: ./manifest_service
+      dockerfile: Dockerfile.celery
+    container_name: meridian-manifest-celery-beat
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@manifest-db:5432/manifest_db
+      - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=info
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=false
+    command: celery -A app.celery_app:celery_app beat --loglevel=info
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - meridian
+    restart: unless-stopped
+
 volumes:
   redis_data:
   minio_data:
   auth_db_data:
   video_db_data:
   media_processing_db_data:
+  manifest_db_data:
 
 networks:
   meridian:

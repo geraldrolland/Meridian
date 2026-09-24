@@ -633,6 +633,7 @@ class TestProcessCompletedJobs:
         assert result == {"processed": 0}
         session.close.assert_called_once()
 
+    @patch("app.tasks.process_completed_jobs.get_video_framerate", return_value=30.0)
     @patch("app.tasks.process_completed_jobs.get_video_duration", return_value=120.5)
     @patch("app.tasks.process_completed_jobs.build_object_url", return_value="http://minio:9000/vidsegments/vid1/720p/seg_001.mp4")
     @patch("app.tasks.process_completed_jobs.resolve_object_key", return_value="vid1/720p/seg_001.mp4")
@@ -643,6 +644,7 @@ class TestProcessCompletedJobs:
     def test_successful_publish(
         self, mock_get_session, mock_acquire, mock_release,
         mock_cleanup_cls, mock_resolve, mock_build_url, mock_get_duration,
+        mock_get_framerate,
     ):
         session = mock_get_session.return_value
         job = _make_job(status=JobStatus.COMPLETED, published=False)
@@ -689,8 +691,11 @@ class TestProcessCompletedJobs:
         assert "manifest_metadata" in added_outbox.payload
         assert added_outbox.payload["manifest_metadata"]["manifest_type"] == "static"
         assert added_outbox.payload["manifest_metadata"]["video_duration"] == 120.5
+        assert added_outbox.payload["manifest_metadata"]["framerate"] == 30.0
         mock_get_duration.assert_called_once()
+        mock_get_framerate.assert_called_once()
 
+    @patch("app.tasks.process_completed_jobs.get_video_framerate", return_value=30.0)
     @patch("app.tasks.process_completed_jobs.get_video_duration", return_value=120.5)
     @patch("app.tasks.process_completed_jobs.build_object_url", return_value="http://minio:9000/vidsegments/vid1/720p/seg_001.mp4")
     @patch("app.tasks.process_completed_jobs.resolve_object_key", return_value="vid1/720p/seg_001.mp4")
@@ -701,6 +706,7 @@ class TestProcessCompletedJobs:
     def test_segment_urls_collected(
         self, mock_get_session, mock_acquire, mock_release,
         mock_cleanup_cls, mock_resolve, mock_build_url, mock_get_duration,
+        mock_get_framerate,
     ):
         session = mock_get_session.return_value
         job = _make_job(status=JobStatus.COMPLETED, published=False)
@@ -746,3 +752,4 @@ class TestProcessCompletedJobs:
         assert added_outbox.payload["thumbnail_url"] == job.vid_thumbnail_url
         assert "manifest_metadata" in added_outbox.payload
         assert added_outbox.payload["manifest_metadata"]["video_duration"] == 120.5
+        assert added_outbox.payload["manifest_metadata"]["framerate"] == 30.0

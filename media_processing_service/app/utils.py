@@ -21,6 +21,24 @@ def get_video_duration(file_path: str) -> float:
     return float(probe["format"]["duration"])
 
 
+def get_video_framerate(video_file_path: str) -> float:
+    """Get the frame rate of a video file in frames per second.
+
+    Args:
+        video_file_path: Path to the video file.
+
+    Returns:
+        Frame rate in frames per second as a float.
+    """
+    probe = ffmpeg.probe(video_file_path)
+    video_stream = next(
+        s for s in probe["streams"] if s["codec_type"] == "video"
+    )
+    r_frame_rate: str = video_stream["r_frame_rate"]
+    num, den = map(int, r_frame_rate.split("/"))
+    return num / den
+
+
 def build_object_url(object_key: str, bucket_name: str) -> str:
     """Build a full MinIO object URL from an object key and bucket name.
 

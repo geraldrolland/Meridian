@@ -73,7 +73,7 @@ The gateway starts on `http://127.0.0.1:3000` by default.
 | `CORS_HEADERS` | Allowed headers | `Content-Type,Authorization,X-Request-ID` |
 | `CORS_CREDENTIALS` | Allow credentials | `false` |
 | `JWT_SECRET` | Secret for JWT signing/verification | `change-me-in-production` |
-| `AUTH_EXCLUDE_PATHS` | Comma-separated paths exempt from auth | `/health,/api/auth/login,/api/auth/register` |
+| `AUTH_EXCLUDE_PATHS` | Comma-separated paths exempt from auth | `/health,/ready,/api/auth/login,/api/auth/register` |
 | `RATE_LIMIT_WINDOW_MS` | Global rate limit window (ms) | `900000` (15 min) |
 | `RATE_LIMIT_MAX` | Global max requests per window | `100` |
 | `LOG_LEVEL` | Winston log level | `info` |

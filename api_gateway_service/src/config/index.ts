@@ -47,7 +47,7 @@ const config: GatewayConfig = {
   },
   auth: {
     jwtSecret: process.env.JWT_SECRET || 'change-me-in-production',
-    excludePaths: (process.env.AUTH_EXCLUDE_PATHS || '/health,/api/auth/login,/api/auth/register').split(','),
+    excludePaths: (process.env.AUTH_EXCLUDE_PATHS || '/health,/ready,/api/auth/login,/api/auth/register').split(','),
   },
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),

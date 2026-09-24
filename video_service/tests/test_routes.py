@@ -56,6 +56,8 @@ def _make_video(
     num_of_retries=0,
     filename="test.mp4",
     user_id=1,
+    manifest_url=None,
+    thumbnail_url=None,
 ):
     v = MagicMock()
     v.id = video_id
@@ -64,6 +66,8 @@ def _make_video(
     v.num_of_retries = num_of_retries
     v.filename = filename
     v.user_id = user_id
+    v.manifest_url = manifest_url
+    v.thumbnail_url = thumbnail_url
     v.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
     return v
 
@@ -77,7 +81,11 @@ class TestGetVideo:
     async def test_returns_video_when_found(self, _mock_heavy_deps):
         from app.routes.video import get_video
 
-        video = _make_video(status=VideoStatus.COMPLETED.value, published=True)
+        video = _make_video(
+            status=VideoStatus.COMPLETED.value,
+            published=True,
+            manifest_url="http://minio:9000/manifest/vid-123/manifest_abc.mpd",
+        )
         session = _make_mock_session(video=video)
         user = _make_user(user_id=1)
 
@@ -88,6 +96,7 @@ class TestGetVideo:
         assert result["published"] is True
         assert result["filename"] == "test.mp4"
         assert result["user_id"] == 1
+        assert result["manifest_url"] == "http://minio:9000/manifest/vid-123/manifest_abc.mpd"
         assert "created_at" in result
 
     @pytest.mark.asyncio

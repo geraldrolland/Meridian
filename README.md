@@ -9,6 +9,7 @@ MERIDIAN provides a complete pipeline for user authentication, video upload (wit
 ## Table of Contents
 
 - [System Architecture](#system-architecture)
+- [Video Processing Pipeline](#video-processing-pipeline)
 - [Infrastructure](#infrastructure)
 - [Kafka Topics](#kafka-topics)
 - [Security Model](#security-model)
@@ -97,7 +98,7 @@ Handles identity, session management, and the JWT token lifecycle. Built with Ex
 | GET | /api/auth/me | Return authenticated user profile | Yes |
 | POST | /api/auth/refresh-token | Single-use token rotation | No (uses cookie) |
 | GET | /health | Health check | No |
-| GET | /ready | Database connectivity probe | No |
+| GET | /ready | Readiness (`{"status","checks"}`; 200/500) | No |
 
 **Session Architecture:**
 
@@ -147,7 +148,7 @@ Manages video upload, storage, and the async processing lifecycle. Built with Fa
 | POST | /api/video/{id}/upload/abort | Discard multipart upload | Yes |
 | POST | /api/video/{id}/retry | Retry a video in RETRY status | Yes |
 | WS | /ws/video/notification | WebSocket for real-time updates | Yes (Bearer JWT + HMAC) |
-| GET | /ready | Database readiness probe | No |
+| GET | /ready | Readiness (`{"status","checks"}`; 200/500) | No |
 
 **Upload Flow:**
 
@@ -354,7 +355,110 @@ Both locks use a 2-minute TTL with a 5-second blocking timeout. Locks are always
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/health` | Health check (always returns 200) |
-| `GET` | `/ready` | Readiness check (verifies DB + Redis connectivity) |
+| `GET` | `/ready` | Readiness (`{"status","checks"}`; 200 when all ok, 500 otherwise) |
+
+---
+
+### Manifest Service (Port 8002)
+
+Generates static MPEG-DASH (`.mpd`) manifests for completed multi-rendition jobs. Built with FastAPI + Celery (Python 3.12). Consumes `job.completed`, builds the MPD, uploads to MinIO `manifest`, and publishes `manifest.completed` via the transactional outbox so the Video Service can set `status=COMPLETED` and `manifest_url`.
+
+**Pipeline:**
+
+```
+job.completed
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ 1. Kafka Consumer                    │
+│    ManifestTask (PENDING) + outbox   │
+└──────────────────┬───────────────────┘
+                   ▼
+┌──────────────────────────────────────┐
+│ 2. process_manifest_task (15s)       │
+│    Generate DASH MPD → MinIO         │
+│    status=COMPLETED + manifest_url   │
+└──────────────────┬───────────────────┘
+                   ▼
+┌──────────────────────────────────────┐
+│ 3. process_completed_manifest_task   │
+│    Outbox → manifest.completed       │
+└──────────────────┬───────────────────┘
+                   ▼
+┌──────────────────────────────────────┐
+│ 4. process_outbox_task (10s)         │
+│    PENDING outbox → Kafka            │
+└──────────────────────────────────────┘
+```
+
+**API Endpoints:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Liveness probe |
+| `GET` | `/ready` | Redis, DB, MinIO, RabbitMQ, Kafka (`{"status","checks"}`; 200/500) |
+
+See [`manifest_service/README.md`](manifest_service/README.md) for the full service guide.
+
+---
+
+## Video Processing Pipeline
+
+End-to-end flow from client upload to DASH playback-ready `manifest_url`:
+
+```
+ Client                Gateway              Auth / Video           MinIO
+   |                      |                      |                   |
+   |-- register/login ---->|-- HMAC signed ----->|                   |
+   |                      |                      |                   |
+   |-- POST /api/video -->|-- proxy ------------>|-- create Video -->|
+   |                      |                      |  AWAITING_UPLOAD  |
+   |<-- presigned URLs ---|<---------------------|                   |
+   |                      |                      |                   |
+   |========== direct PUT/POST to MinIO (viduploads) ===============|
+   |                                              bucket notification|
+   |                                              --> Kafka          |
+   v                                                                  v
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │ Video Service consumer: status QUEUED → outbox video.queued          │
+ └───────────────────────────────┬──────────────────────────────────────┘
+                                 v
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │ Media Processing Service                                             │
+ │  download → thumbnail → 6s segments → CMAF init → transcode         │
+ │  (360p/480p/720p/1080p) → upload vidsegments → job.completed/failed  │
+ └───────────────────────────────┬──────────────────────────────────────┘
+                                 v
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │ Manifest Service                                                     │
+ │  job.completed → build DASH MPD → MinIO manifest bucket              │
+ │  → outbox manifest.completed (+ manifest_url)                        │
+ └───────────────────────────────┬──────────────────────────────────────┘
+                                 v
+ ┌──────────────────────────────────────────────────────────────────────┐
+ │ Video Service                                                        │
+ │  manifest.completed → status COMPLETED + manifest_url → WS notify    │
+ │  Client fetches MPD + init/segments for playback                     │
+ └──────────────────────────────────────────────────────────────────────┘
+```
+
+**Status lifecycle (`videos.status`):**
+
+`AWAITING_UPLOAD → QUEUED → PROCESSING → GENERATING_MANIFEST → COMPLETED`
+
+Failure paths: `FAILED` (terminal after max retries) and `RETRY` (client-triggered requeue).
+
+**Reliability:**
+
+| Concern | Mechanism |
+|---------|-----------|
+| Event loss | Transactional outbox in each service DB; Celery beat publishes to Kafka |
+| Duplicate work | Dual Redis locks (PROCESSING + COMMITTING) with TTL + `finally` release |
+| Transient errors | `num_of_retries` + `retry_after` backoff; terminal FAILED after max retries |
+| Real-time UX | Redis pub/sub → WebSocket push of status changes |
+| Readiness | Unified `/ready` on all services (`{"status","checks"}`; 200/500) |
+
+**Kafka topics in the path:** `bucketnotifications` → `video.queued` → `video.processing` → `job.completed` / `job.failed` → `manifest.generating` / `manifest.completed` / `manifest.failed`.
 
 ---
 
@@ -365,8 +469,9 @@ Both locks use a 2-minute TTL with a 5-second blocking timeout. Locks are always
 | PostgreSQL (auth-db) | 5433 / 5432 | Auth user storage |
 | PostgreSQL (video-db) | 5434 / 5432 | Video records, notifications, outbox |
 | PostgreSQL (media-processing-db) | 5435 / 5432 | Jobs, transcode tasks, upload tasks, outbox |
+| PostgreSQL (manifest-db) | 5436 / 5432 | Manifest tasks, outbox |
 | Redis | 6379 | Sessions, rate limits, Celery result backend, distributed locks, pub/sub |
-| Kafka (KRaft mode) | 9092 | Event streaming (8 topics) |
+| Kafka (KRaft mode) | 9092 | Event streaming |
 | MinIO (API) | 9000 | S3-compatible video object storage |
 | MinIO (Console) | 9001 | MinIO web UI |
 | RabbitMQ (AMQP) | 5672 | Celery task broker |
@@ -381,11 +486,11 @@ Both locks use a 2-minute TTL with a 5-second blocking timeout. Locks are always
 | `bucketnotifications` | 4 | MinIO | Video Service | MinIO bucket PUT event notifications |
 | `video.queued` | 8 | Video Service | Media Processing Service | Video ready for processing |
 | `video.processing` | 4 | Media Processing Service | Video Service | Video processing started |
-| `job.completed` | 4 | Media Processing Service | Video Service | Job finished processing successfully |
+| `job.completed` | 4 | Media Processing Service | Manifest Service, Video Service | Job finished processing successfully |
 | `job.failed` | 4 | Media Processing Service | Video Service | Job failed after processing attempts |
-| `manifest.generating` | 4 | Media Processing Service | Video Service | Manifest generation started |
-| `manifest.completed` | 4 | Media Processing Service | Video Service | Manifest generation completed |
-| `manifest.failed` | 4 | Media Processing Service | Video Service | Manifest generation failed |
+| `manifest.generating` | 4 | Manifest Service | Video Service | Manifest generation started |
+| `manifest.completed` | 4 | Manifest Service | Video Service | Manifest ready; sets COMPLETED + `manifest_url` |
+| `manifest.failed` | 4 | Manifest Service | Video Service | Manifest generation failed |
 
 ---
 
@@ -406,8 +511,8 @@ MERIDIAN implements defense-in-depth across five layers:
 | WebSocket | JWT + Session Lookup | WebSocket upgrade validated via JWT query param + Redis session check |
 | WebSocket | HMAC Proxy Signature | WebSocket connections from gateway include HMAC-signed headers |
 | Video | Extension Whitelist | Only approved video extensions accepted |
-| Data | Database Isolation | Separate PostgreSQL databases per service (4 databases) |
-| Data | Redis DB Separation | DB 0: sessions/rate limits, DB 1: Celery results, DB 2: distributed locks (video), DB 3: pub/sub (video), DB 4: distributed locks (media) |
+| Data | Database Isolation | Separate PostgreSQL databases per service (5 databases) |
+| Data | Redis DB Separation | DB 0: sessions/rate limits, DB 1: Celery results, DB 2: distributed locks (video), DB 3: pub/sub (video), DB 4: distributed locks (media/manifest) |
 
 ---
 
@@ -470,16 +575,19 @@ This command builds all service images and starts **18 containers**:
 | meridian-media-processing-service | Media Processing Service | FFmpeg pipeline, CMAF transcoding, init segments |
 | meridian-media-processing-celery-worker | Media Processing Celery Worker | 7 periodic processing tasks |
 | meridian-media-processing-celery-beat | Media Processing Celery Beat | Periodic task scheduler |
+| meridian-manifest-service | Manifest Service | DASH MPD generation + manifest.completed events |
+| meridian-manifest-celery-worker | Manifest Celery Worker | Manifest generation + outbox publish tasks |
+| meridian-manifest-celery-beat | Manifest Celery Beat | Periodic task scheduler |
 | meridian-auth-db | PostgreSQL (auth) | Auth user storage |
 | meridian-video-db | PostgreSQL (video) | Video records, outbox |
 | meridian-media-processing-db | PostgreSQL (media-processing) | Jobs, tasks, outbox |
+| meridian-manifest-db | PostgreSQL (manifest) | Manifest tasks, outbox |
 | meridian-redis | Redis | Sessions, rate limits, locks, pub/sub |
 | meridian-kafka | Kafka (KRaft) | Event streaming |
-| meridian-kafka-init | Kafka Init | Creates all 8 topics |
+| meridian-kafka-init | Kafka Init | Creates all topics |
 | meridian-minio | MinIO | S3-compatible object storage |
-| meridian-minio-init | MinIO Init | Creates viduploads bucket + notification config |
+| meridian-minio-init | MinIO Init | Creates viduploads + manifest buckets + notification config |
 | meridian-rabbitmq | RabbitMQ | Celery task broker |
-| meridian-celery-worker | Celery Worker (video) | Processes notifications + queued videos + outbox |
 
 #### Step 3: Verify All Services Are Running
 
@@ -562,12 +670,14 @@ docker compose down --rmi all
 | Auth Service | http://localhost:4000 |
 | Video Service | http://localhost:8000 |
 | Media Processing Service | http://localhost:8001 |
+| Manifest Service | http://localhost:8002 |
 | MinIO Console | http://localhost:9001 |
 | RabbitMQ Management | http://localhost:15672 |
 | Kafka (external) | localhost:9092 |
 | Auth DB | localhost:5433 |
 | Video DB | localhost:5434 |
 | Media Processing DB | localhost:5435 |
+| Manifest DB | localhost:5436 |
 | Redis | localhost:6379 |
 
 ---
@@ -669,6 +779,14 @@ npm test
 # Video Service (pytest + Python)
 cd video_service
 python -m pytest tests/ -v
+
+# Media Processing Service (pytest + Python)
+cd media_processing_service
+python -m pytest tests/ -v
+
+# Manifest Service (pytest + Python)
+cd manifest_service
+python -m pytest tests/ -v
 ```
 
 ### Video Service Test Coverage
@@ -679,14 +797,17 @@ python -m pytest tests/ -v
 | MinIO client (presigned POST) | 2 tests |
 | Multipart upload functions | 4 tests |
 | Process outbox + queued videos tasks | 10 tests |
-| Ready endpoint | 6 tests |
+| Ready endpoint | multi-dependency readiness |
 | Routes (upload, get, retry) | 16 tests |
 | Upload endpoint | 8 tests |
-| Video/Upload models | 14 tests |
+| Video/Upload models | includes `manifest_url` |
 | Lock system | 6 tests |
 | Producer | 4 tests |
+| Consumers (incl. `manifest.completed`) | full consumer suite |
 | WebSocket + proxy signature | 17 tests |
-| **Total** | **81 tests** |
+| **Total** | **128 passed** |
+
+Other suites (latest local runs): API Gateway **74 passed** (2 skipped), Auth **25 passed**, Media Processing **98 passed**, Manifest **86 passed**.
 
 ### Load and Performance Testing
 
@@ -863,7 +984,7 @@ MERIDIAN/
 │   │   ├── routes/
 │   │   │   ├── __init__.py
 │   │   │   ├── health.py             # GET /health
-│   │   │   └── ready.py              # GET /ready (checks DB + Redis)
+│   │   │   └── ready.py              # GET /ready (unified multi-dependency readiness)
 │   │   └── tasks/
 │   │       ├── __init__.py
 │   │       ├── process_queued_jobs.py        # Download, segment, create TranscodeTasks
@@ -879,7 +1000,28 @@ MERIDIAN/
 │   ├── Dockerfile.celery             # Celery worker (solo pool)
 │   └── start.sh
 │
-├── docker-compose.yml                # Full-stack orchestration (18 containers)
+├── manifest_service/                 # FastAPI + Celery Python 3.12 (Port 8002)
+│   ├── app/
+│   │   ├── main.py                   # FastAPI app + Kafka consumer lifespan
+│   │   ├── consumer.py               # job.completed → ManifestTask + outbox
+│   │   ├── producer.py               # Sync Kafka producer for outbox publish
+│   │   ├── celery_app.py             # Celery config + beat schedule (4 tasks)
+│   │   ├── config.py                 # Pydantic settings
+│   │   ├── lock.py                   # Redis PROCESSING/COMMITTING locks
+│   │   ├── utils.py                  # Object URL/key helpers + temp cleanup
+│   │   ├── db_config/                # Async + sync database engines
+│   │   ├── generating_manifest/      # Static DASH MPD builder
+│   │   ├── minio_client/             # MinIO upload helpers
+│   │   ├── models/                   # ManifestTask, Outbox
+│   │   ├── routes/                   # /health + unified /ready
+│   │   └── tasks/                    # Manifest, outbox, failed, completed publishers
+│   ├── tests/                        # pytest suite (86 tests)
+│   ├── Dockerfile
+│   ├── Dockerfile.celery
+│   ├── requirements.txt
+│   └── start.sh
+│
+├── docker-compose.yml                # Full-stack orchestration
 ├── e2e_test.py                       # End-to-end test script
 ├── .gitignore
 └── README.md
@@ -994,6 +1136,24 @@ MERIDIAN/
 | `CELERY_RESULT_BACKEND` | redis://redis:6379/1 | Redis for Celery results |
 | `SEGMENT_DURATION` | 6 | Segment duration in seconds |
 | `SEGMENT_PREFIX` | seg_ | Filename prefix for generated segments |
+| `LOG_LEVEL` | info | Python logging level |
+
+### Manifest Service
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | -- | PostgreSQL async connection string |
+| `KAFKA_BOOTSTRAP_SERVERS` | kafka:29092 | Kafka broker addresses |
+| `KAFKA_TOPIC` | job.completed | Incoming topic |
+| `KAFKA_CONSUMER_GROUP_ID` | meridian-manifest-consumer-group | Consumer group ID |
+| `REDIS_HOST` | redis | Redis host for distributed locks |
+| `MINIO_ENDPOINT` | minio:9000 | MinIO endpoint |
+| `MINIO_ACCESS_KEY` | minioadmin | MinIO access key |
+| `MINIO_SECRET_KEY` | minioadmin | MinIO secret key |
+| `MINIO_SECURE` | false | Use HTTPS for MinIO |
+| `CELERY_BROKER_URL` | amqp://guest:guest@rabbitmq:5672// | RabbitMQ broker |
+| `CELERY_RESULT_BACKEND` | redis://redis:6379/1 | Redis for Celery results |
+| `LOG_LEVEL` | info | Python logging level |
 | `LOG_LEVEL` | info | Python logging level |
 
 ---
