@@ -80,6 +80,20 @@ function setupRoutes(): void {
           });
         },
         /**
+         * Strips CORS headers from upstream responses.
+         *
+         * The gateway's own `cors` middleware already set
+         * `Access-Control-Allow-Origin` / `Access-Control-Allow-Credentials`
+         * on the response; upstream headers (e.g. a hard-coded `*`) would
+         * overwrite them, which browsers reject when credentials are
+         * included. CORS is owned exclusively by the gateway.
+         */
+        proxyRes: (proxyRes) => {
+          delete proxyRes.headers['access-control-allow-origin'];
+          delete proxyRes.headers['access-control-allow-credentials'];
+          delete proxyRes.headers['access-control-expose-headers'];
+        },
+        /**
          * Handles proxy connection errors (upstream unreachable, timeout, etc.).
          * Returns 502 Bad Gateway with a generic error message.
          */

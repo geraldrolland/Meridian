@@ -27,6 +27,7 @@ jest.mock('../../../src/middleware/logger', () => ({
 
 let proxyReqHandler: (proxyReq: any, req: any) => void;
 let errorHandler: (err: any, req: any, res: any) => void;
+let proxyResHandler: (proxyRes: any) => void;
 
 beforeAll(() => {
   const { getCapturedOptions } = require('../../__mocks__/http-proxy-middleware');
@@ -34,6 +35,7 @@ beforeAll(() => {
   const options = getCapturedOptions();
   proxyReqHandler = options.on.proxyReq;
   errorHandler = options.on.error;
+  proxyResHandler = options.on.proxyRes;
 });
 
 describe('Proxy Module', () => {
@@ -137,6 +139,24 @@ describe('Proxy Module', () => {
         to: 'http://test-service:4000/api/test/data',
         prefix: '/api/test',
       });
+    });
+
+    it('should strip CORS headers from upstream responses', () => {
+      const proxyRes = {
+        headers: {
+          'access-control-allow-origin': '*',
+          'access-control-allow-credentials': 'true',
+          'access-control-expose-headers': 'x-total-count',
+          'content-type': 'application/json',
+        },
+      };
+
+      proxyResHandler(proxyRes);
+
+      expect(proxyRes.headers['access-control-allow-origin']).toBeUndefined();
+      expect(proxyRes.headers['access-control-allow-credentials']).toBeUndefined();
+      expect(proxyRes.headers['access-control-expose-headers']).toBeUndefined();
+      expect(proxyRes.headers['content-type']).toBe('application/json');
     });
   });
 

@@ -3,7 +3,6 @@ import path from 'path';
 import express from 'express';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
-import cors from 'cors';
 import config, { logger } from './config';
 import { checkProxySignature } from './middleware/checkProxySignature';
 import { errorHandler } from './middleware/errorHandler';
@@ -14,7 +13,6 @@ import readyRoutes from './routes/ready';
 const app = express();
 
 app.use(helmet());
-app.use(cors({ origin: '*', credentials: true }));
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
