@@ -46,7 +46,7 @@ class TestGenerateUploadData:
         mock_minio_client = MagicMock()
         mock_minio_client.presigned_post_policy.return_value = fake_form_data
 
-        with patch("app.minio_client.client", mock_minio_client), \
+        with patch("app.minio_client.presign_client", mock_minio_client), \
              patch("app.minio_client.settings", sys.modules["app.config"].settings):
             from app.minio_client import generate_upload_data
             result = generate_upload_data("vid-123", "test.mp4", "video/mp4")
@@ -67,7 +67,7 @@ class TestGenerateUploadData:
         mock_minio_client = MagicMock()
         mock_minio_client.presigned_post_policy.return_value = fake_form_data
 
-        with patch("app.minio_client.client", mock_minio_client), \
+        with patch("app.minio_client.presign_client", mock_minio_client), \
              patch("app.minio_client.settings", sys.modules["app.config"].settings), \
              patch("app.minio_client.PostPolicy", return_value=mock_policy):
             from app.minio_client import generate_upload_data

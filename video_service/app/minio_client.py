@@ -15,6 +15,19 @@ client = Minio(
     secure=settings.minio_secure,
 )
 
+# Used exclusively for presigned URLs handed to browsers. SigV4 signs the
+# Host header, so the URL must be built with the endpoint the browser
+# connects to (public), not the internal Docker hostname. `region` is set
+# explicitly so minio-py signs locally instead of calling GetBucketLocation
+# over HTTP against an endpoint that is unreachable from inside the container.
+presign_client = Minio(
+    endpoint=settings.minio_public_endpoint,
+    access_key=settings.minio_access_key,
+    secret_key=settings.minio_secret_key,
+    secure=settings.minio_secure,
+    region="us-east-1",
+)
+
 
 # ── Small file: single presigned POST ──────────────────────────────
 
@@ -22,17 +35,17 @@ def generate_upload_data(video_id: str, filename: str, content_type: str = "vide
     """Generate presigned POST form data with Content-Type restriction.
 
     Returns a dict with:
-      - url: the POST target URL (http://<endpoint>/<bucket>)
+      - url: the POST target URL (http://<public_endpoint>/<bucket>)
       - fields: dict of hidden form fields to include in the POST
     """
     object_key = f"videos/{video_id}/{filename}"
     policy = PostPolicy(settings.minio_bucket, datetime.utcnow() + timedelta(hours=2))
     policy.add_equals_condition("key", object_key)
     policy.add_starts_with_condition("Content-Type", "video/")
-    form_data = client.presigned_post_policy(policy)
+    form_data = presign_client.presigned_post_policy(policy)
     logger.info("Generated presigned POST data for object: %s", object_key)
     return {
-        "url": f"http://{settings.minio_endpoint}/{settings.minio_bucket}",
+        "url": f"http://{settings.minio_public_endpoint}/{settings.minio_bucket}",
         "fields": {**form_data, "key": object_key},
     }
 
@@ -62,7 +75,7 @@ def generate_part_urls(video_id: str, filename: str, upload_id: str, total_parts
     object_key = f"videos/{video_id}/{filename}"
     urls = []
     for i in range(1, total_parts + 1):
-        url = client.get_presigned_url(
+        url = presign_client.get_presigned_url(
             "PUT",
             settings.minio_bucket,
             object_key,

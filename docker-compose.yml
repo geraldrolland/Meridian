@@ -205,6 +205,11 @@ services:
       mc alias set myminio http://minio:9000 minioadmin minioadmin &&
       mc mb --ignore-existing myminio/viduploads &&
       mc mb --ignore-existing myminio/manifest &&
+      mc mb --ignore-existing myminio/vidsegments &&
+      mc mb --ignore-existing myminio/vidthumbnails &&
+      mc anonymous set download myminio/manifest &&
+      mc anonymous set download myminio/vidsegments &&
+      mc anonymous set download myminio/vidthumbnails &&
       mc event add myminio/viduploads arn:minio:sqs::1:kafka --event put -p &&
       echo 'MinIO bucket and notification configured'
       "
@@ -244,6 +249,7 @@ services:
       - KAFKA_AUTO_OFFSET_RESET=earliest
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@video-db:5432/video_db
       - MINIO_ENDPOINT=minio:9000
+      - MINIO_PUBLIC_ENDPOINT=localhost:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
       - MINIO_BUCKET=viduploads

@@ -1,5 +1,4 @@
 import { createUpload } from "@/lib/api/video";
-import { rewriteStorageUrl } from "@/lib/minio-url";
 import { isMultipartUpload, type UploadPartResult, type UploadResponse } from "@/lib/types";
 import { trackVideoId } from "@/lib/video/library";
 
@@ -27,7 +26,6 @@ async function uploadPresigned(
   upload: { url: string; fields: Record<string, string> },
   onProgress: ProgressFn,
 ): Promise<void> {
-  const url = rewriteStorageUrl(upload.url);
   const form = new FormData();
   for (const [key, value] of Object.entries(upload.fields)) {
     form.append(key, value);
@@ -36,7 +34,7 @@ async function uploadPresigned(
 
   await new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", url, true);
+    xhr.open("POST", upload.url, true);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
         const percent = Math.round((e.loaded / e.total) * 100);
@@ -80,7 +78,7 @@ async function uploadMultipart(
       const end = Math.min(start + partSize, file.size);
       const blob = file.slice(start, end);
 
-      const putRes = await fetch(rewriteStorageUrl(part.url), {
+      const putRes = await fetch(part.url, {
         method: "PUT",
         body: blob,
         headers: { "Content-Type": file.type || "video/mp4" },

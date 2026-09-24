@@ -74,7 +74,7 @@ class TestMultipartUploadFunctions:
         mock_client = MagicMock()
         mock_client.get_presigned_url.return_value = "http://minio/part-url"
 
-        with patch("app.minio_client.client", mock_client), \
+        with patch("app.minio_client.presign_client", mock_client), \
              patch("app.minio_client.settings", sys.modules["app.config"].settings):
             from app.minio_client import generate_part_urls
             result = generate_part_urls("vid-123", "test.mp4", "upload-id-123", 3)

@@ -16,7 +16,10 @@ class Settings(BaseSettings):
         kafka_consumer_group_id: Consumer group ID for the Kafka consumer.
         kafka_auto_offset_reset: Where to start reading when no committed offset exists.
         database_url: SQLAlchemy async database connection string.
-        minio_endpoint: MinIO (S3-compatible) endpoint address.
+        minio_endpoint: MinIO (S3-compatible) endpoint address (internal).
+        minio_public_endpoint: MinIO endpoint used for presigned URLs handed
+            to browsers (must match the host the browser connects to, since
+            SigV4 signs the Host header).
         minio_access_key: MinIO access key.
         minio_secret_key: MinIO secret key.
         minio_bucket: Bucket name for video uploads.
@@ -48,6 +51,7 @@ class Settings(BaseSettings):
     kafka_manifest_completed_consumer_group_id: str = "meridian-video-manifest-completed-consumer-group"
     database_url: str = "postgresql+asyncpg://postgres:postgres@video-db:5432/video_db"
     minio_endpoint: str = "minio:9000"
+    minio_public_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
     minio_bucket: str = "viduploads"
