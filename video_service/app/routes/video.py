@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import os
+import uuid
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -122,6 +123,7 @@ async def upload_video(
 
     video = Video(
         filename=body.filename,
+        storage_filename=f"{uuid.uuid4().hex[:8]}.{ext}",
         user_id=user.userId,
     )
     session.add(video)
@@ -130,8 +132,8 @@ async def upload_video(
 
     if body.file_size > settings.multipart_threshold:
         total_parts = math.ceil(body.file_size / settings.default_part_size)
-        upload_id = initiate_multipart_upload(video.id, body.filename, body.content_type)
-        part_urls = generate_part_urls(video.id, body.filename, upload_id, total_parts)
+        upload_id = initiate_multipart_upload(video.id, video.storage_filename, body.content_type)
+        part_urls = generate_part_urls(video.id, video.storage_filename, upload_id, total_parts)
 
         video.multipart_upload_id = upload_id
         video.total_parts = total_parts
@@ -149,7 +151,7 @@ async def upload_video(
             },
         }
 
-    upload = generate_upload_data(video.id, body.filename, body.content_type)
+    upload = generate_upload_data(video.id, video.storage_filename, body.content_type)
     return {
         **_video_response(video),
         "upload": upload,
@@ -175,7 +177,7 @@ async def complete_upload(
         raise HTTPException(status_code=400, detail="Video has no multipart upload in progress")
 
     parts_data = [{"part_number": p.part_number, "etag": p.etag} for p in body.parts]
-    complete_multipart_upload(video_id, video.filename, body.upload_id, parts_data)
+    complete_multipart_upload(video_id, video.storage_filename, body.upload_id, parts_data)
     video.multipart_upload_id = None
     await session.commit()
 
@@ -201,7 +203,7 @@ async def abort_upload(
     if video.multipart_upload_id is None:
         raise HTTPException(status_code=400, detail="Video has no multipart upload in progress")
 
-    abort_multipart_upload(video_id, video.filename, body.upload_id)
+    abort_multipart_upload(video_id, video.storage_filename, body.upload_id)
 
     video.status = VideoStatus.FAILED.value
     video.multipart_upload_id = None

@@ -1,3 +1,4 @@
+import re
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -5,6 +6,9 @@ import pytest
 
 from app.models.session import SessionData
 from app.models.video import (
+    AbortUploadRequest,
+    CompleteUploadRequest,
+    UploadPartResult,
     UploadRequest,
     Video,
     VideoStatus,
@@ -73,6 +77,8 @@ def _mock_heavy_deps():
             "generate_upload_data": mock_minio.generate_upload_data,
             "initiate_multipart_upload": mock_minio.initiate_multipart_upload,
             "generate_part_urls": mock_minio.generate_part_urls,
+            "complete_multipart_upload": mock_minio.complete_multipart_upload,
+            "abort_multipart_upload": mock_minio.abort_multipart_upload,
         }
 
 
@@ -199,3 +205,129 @@ class TestUploadEndpoint:
 
         assert result["upload"]["url"] == "http://minio:9000/viduploads"
         assert "fields" in result["upload"]
+
+
+class TestStorageFilename:
+    ORIGINAL = "chief.of.war.s01e03.(NKIRI.COM) (1).mkv"
+
+    @pytest.mark.asyncio
+    async def test_original_filename_kept_for_display(self, _mock_heavy_deps):
+        from app.routes.video import upload_video
+
+        mock_session = _make_mock_session()
+        body = UploadRequest(filename=self.ORIGINAL)
+        user = SessionData(userId=1, email="a@b.com")
+
+        result = await upload_video(body=body, session=mock_session, user=user)
+
+        assert result["filename"] == self.ORIGINAL
+        assert mock_session._captured[0].filename == self.ORIGINAL
+
+    @pytest.mark.asyncio
+    async def test_storage_filename_is_8hex_with_validated_ext(self, _mock_heavy_deps):
+        from app.routes.video import upload_video
+
+        mock_session = _make_mock_session()
+        body = UploadRequest(filename=self.ORIGINAL)
+        user = SessionData(userId=1, email="a@b.com")
+
+        await upload_video(body=body, session=mock_session, user=user)
+
+        video = mock_session._captured[0]
+        assert re.fullmatch(r"[0-9a-f]{8}\.mkv", video.storage_filename)
+        assert " " not in video.storage_filename
+        assert "(" not in video.storage_filename
+
+    @pytest.mark.asyncio
+    async def test_storage_filename_unique_per_upload(self, _mock_heavy_deps):
+        from app.routes.video import upload_video
+
+        names = []
+        for _ in range(2):
+            mock_session = _make_mock_session()
+            body = UploadRequest(filename=self.ORIGINAL)
+            user = SessionData(userId=1, email="a@b.com")
+            await upload_video(body=body, session=mock_session, user=user)
+            names.append(mock_session._captured[0].storage_filename)
+
+        assert names[0] != names[1]
+
+    @pytest.mark.asyncio
+    async def test_multipart_calls_use_storage_filename(self, _mock_heavy_deps):
+        from app.routes.video import upload_video
+
+        mock_session = _make_mock_session()
+        body = UploadRequest(filename=self.ORIGINAL, file_size=200 * 1024 * 1024)
+        user = SessionData(userId=1, email="a@b.com")
+
+        await upload_video(body=body, session=mock_session, user=user)
+
+        video = mock_session._captured[0]
+        initiate = _mock_heavy_deps["initiate_multipart_upload"]
+        part_urls = _mock_heavy_deps["generate_part_urls"]
+
+        assert initiate.call_args[0][1] == video.storage_filename
+        assert initiate.call_args[0][1] != body.filename
+        assert part_urls.call_args[0][1] == video.storage_filename
+
+    @pytest.mark.asyncio
+    async def test_small_file_uses_storage_filename(self, _mock_heavy_deps):
+        from app.routes.video import upload_video
+
+        mock_session = _make_mock_session()
+        body = UploadRequest(filename=self.ORIGINAL, file_size=1024)
+        user = SessionData(userId=1, email="a@b.com")
+
+        await upload_video(body=body, session=mock_session, user=user)
+
+        video = mock_session._captured[0]
+        call_args = _mock_heavy_deps["generate_upload_data"].call_args
+        assert call_args[0][1] == video.storage_filename
+        assert call_args[0][1] != body.filename
+
+    @pytest.mark.asyncio
+    async def test_complete_upload_uses_storage_filename(self, _mock_heavy_deps):
+        from app.routes.video import complete_upload
+
+        video = Video(
+            filename=self.ORIGINAL,
+            storage_filename="abcd1234.mkv",
+            user_id=7,
+            multipart_upload_id="upload-id-123",
+        )
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=video)
+        user = SessionData(userId=7, email="a@b.com")
+        body = CompleteUploadRequest(
+            upload_id="upload-id-123",
+            parts=[UploadPartResult(part_number=1, etag="etag-1")],
+        )
+
+        await complete_upload(video_id=video.id, body=body, session=mock_session, user=user)
+
+        _mock_heavy_deps["complete_multipart_upload"].assert_called_once_with(
+            video.id, "abcd1234.mkv", "upload-id-123",
+            [{"part_number": 1, "etag": "etag-1"}],
+        )
+
+    @pytest.mark.asyncio
+    async def test_abort_upload_uses_storage_filename(self, _mock_heavy_deps):
+        from app.routes.video import abort_upload
+
+        video = Video(
+            filename=self.ORIGINAL,
+            storage_filename="abcd1234.mkv",
+            user_id=7,
+            multipart_upload_id="upload-id-123",
+        )
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=video)
+        user = SessionData(userId=7, email="a@b.com")
+        body = AbortUploadRequest(upload_id="upload-id-123")
+
+        await abort_upload(video_id=video.id, body=body, session=mock_session, user=user)
+
+        _mock_heavy_deps["abort_multipart_upload"].assert_called_once_with(
+            video.id, "abcd1234.mkv", "upload-id-123"
+        )
+        assert video.status == VideoStatus.FAILED.value

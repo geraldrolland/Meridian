@@ -83,6 +83,9 @@ class Video(SQLModel, table=True):
         max_length=36,
     )
     filename: str = Field(max_length=512)
+    # Safe name used in MinIO object keys (original filename kept above for display).
+    # Existing DBs: ALTER TABLE videos ADD COLUMN IF NOT EXISTS storage_filename VARCHAR(64);
+    storage_filename: str | None = Field(default=None, max_length=64, nullable=True)
     size: int | None = Field(default=None, nullable=True)
     user_id: int = Field(nullable=False)
     status: str = Field(
