@@ -8,13 +8,16 @@ from typing import Any
 
 import redis.asyncio as redis
 from fastapi import WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 
+from app.abr import SegmentReport, recommend_rendition
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 redis_client: redis.Redis | None = None
 connections: dict[str, list[WebSocket]] = {}
+send_locks: dict[int, asyncio.Lock] = {}
 
 PROXY_SIGNATURE_MAX_AGE_MS = 60_000
 
@@ -48,14 +51,30 @@ def verify_proxy_signature(path: str, signature: str, timestamp_str: str) -> boo
     return hmac.compare_digest(expected, signature)
 
 
-async def publish_update(video_id: str, status: str, user_id: int) -> None:
+async def publish_update(
+    video_id: str,
+    status: str,
+    user_id: int,
+    thumbnail_url: str | None = None,
+    manifest_url: str | None = None,
+) -> None:
     r = get_redis()
     message = json.dumps({
         "video_id": video_id,
         "status": status,
         "user_id": user_id,
+        "thumbnail_url": thumbnail_url,
+        "manifest_url": manifest_url,
     })
     await r.publish("video:notification", message)
+
+
+async def safe_send(ws: WebSocket, text: str) -> None:
+    """Serialize writes on one socket: the pubsub fan-out and the ABR reply
+    loop both send on the same connection."""
+    lock = send_locks.setdefault(id(ws), asyncio.Lock())
+    async with lock:
+        await ws.send_text(text)
 
 
 async def start_pubsub_listener() -> None:
@@ -82,7 +101,7 @@ async def start_pubsub_listener() -> None:
                 stale: list[WebSocket] = []
                 for ws in sockets:
                     try:
-                        await ws.send_text(data)
+                        await safe_send(ws, data)
                     except Exception:
                         stale.append(ws)
 
@@ -119,11 +138,39 @@ async def ws_video_endpoint(websocket: WebSocket, user_id: str) -> None:
     await websocket.accept()
 
     connections.setdefault(user_id, []).append(websocket)
+    send_locks.setdefault(id(websocket), asyncio.Lock())
     logger.info("WS connected for user %s (total: %d)", user_id, len(connections[user_id]))
 
     try:
         while True:
-            await asyncio.sleep(3600)
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect(int(message.get("code") or 1000))
+            raw = message.get("text")
+            if raw is None:
+                # Tolerate binary frames (e.g. a proxy that re-frames text) so a
+                # single non-text message can never kill the ABR reply loop.
+                data = message.get("bytes")
+                if data is None:
+                    continue
+                raw = data.decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("Ignoring non-JSON WS message from user %s", user_id)
+                continue
+
+            if not isinstance(payload, dict) or payload.get("type") != "segment_report":
+                continue  # unknown client message -- ignore, keep the socket alive
+
+            try:
+                report = SegmentReport.model_validate(payload)
+            except ValidationError as exc:
+                logger.warning("Invalid segment report from user %s: %s", user_id, exc)
+                continue
+
+            recommendation = recommend_rendition(report)
+            await safe_send(websocket, recommendation.model_dump_json())
     except WebSocketDisconnect:
         logger.info("WS disconnected for user %s", user_id)
     except Exception as e:
@@ -134,4 +181,5 @@ async def ws_video_endpoint(websocket: WebSocket, user_id: str) -> None:
             sockets.remove(websocket)
         if not sockets:
             connections.pop(user_id, None)
+        send_locks.pop(id(websocket), None)
         logger.info("WS cleaned up for user %s", user_id)

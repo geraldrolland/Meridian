@@ -1,14 +1,44 @@
 import crypto from 'crypto';
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
-import { WebSocket, WebSocketServer } from 'ws';
+import { RawData, WebSocket, WebSocketServer } from 'ws';
 import http from 'http';
 import config from '../config';
 import redis from '../config/redis';
+import { invalidateVideoCache } from '../middleware/cache';
 import { logger } from '../middleware/logger';
 import { SessionData } from '../types';
 
 const router = Router();
+
+/**
+ * Extracts the video id from a video-service status push
+ * (`{"video_id": "...", "status": "...", "user_id": ...}` — no `type` field).
+ * Returns null for ABR frames, non-JSON frames, and malformed data.
+ */
+function statusFrameVideoId(data: RawData): string | null {
+  try {
+    const text = Buffer.isBuffer(data)
+      ? data.toString('utf8')
+      : Array.isArray(data)
+        ? Buffer.concat(data).toString('utf8')
+        : null;
+    if (!text) return null;
+    const msg = JSON.parse(text);
+    if (
+      msg &&
+      typeof msg === 'object' &&
+      !('type' in msg) &&
+      typeof msg.video_id === 'string' &&
+      typeof msg.status === 'string'
+    ) {
+      return msg.video_id;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 function signWsRequest(path: string): { signature: string; timestamp: string } {
   const timestamp = Date.now().toString();
@@ -93,18 +123,43 @@ function createWsProxy(server: http.Server): void {
             }
           );
 
+          // The browser's `open` fires as soon as this handshake is accepted,
+          // which is before the upstream dial has finished. `ws.send()` throws
+          // while CONNECTING, so early frames are held rather than dropped —
+          // otherwise the player's first segment_report never reaches the
+          // video service and gets no recommendation.
+          const pending: Array<[RawData, boolean]> = [];
+
+          clientWs.on('message', (data, isBinary) => {
+            if (upstreamWs.readyState === WebSocket.OPEN) {
+              // ws re-guesses the frame type from the JS value (Buffer → binary),
+              // so the original opcode must be carried across the proxy.
+              upstreamWs.send(data, { binary: isBinary });
+              return;
+            }
+            if (pending.length < 64) {
+              pending.push([data, isBinary]);
+            }
+          });
+
           upstreamWs.on('open', () => {
             logger.info('WS proxy connected to video-service for user %s', session.userId);
 
-            clientWs.on('message', (data) => {
-              if (upstreamWs.readyState === WebSocket.OPEN) {
-                upstreamWs.send(data);
-              }
-            });
+            for (const [data, isBinary] of pending.splice(0)) {
+              if (upstreamWs.readyState !== WebSocket.OPEN) break;
+              upstreamWs.send(data, { binary: isBinary });
+            }
 
-            upstreamWs.on('message', (data) => {
+            upstreamWs.on('message', async (data, isBinary) => {
+              // Status pushes invalidate this video's cached GET responses
+              // BEFORE the client sees the frame, so the refetch the frame
+              // triggers can never race a stale entry.
+              const videoId = statusFrameVideoId(data);
+              if (videoId) {
+                await invalidateVideoCache(videoId);
+              }
               if (clientWs.readyState === WebSocket.OPEN) {
-                clientWs.send(data);
+                clientWs.send(data, { binary: isBinary });
               }
             });
 

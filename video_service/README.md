@@ -171,6 +171,41 @@ Retries a video in `RETRY` status — resets it to `QUEUED` with `published=fals
 | 403 | Not authorized |
 | 404 | Video not found |
 
+### Delete Video
+
+```
+DELETE /api/video/{video_id}
+```
+
+Deletes a video and emits a `video.deleted` event (`{ "video_id": "uuid" }`) in the same transaction. `manifest_service` and `media_processing_service` consume the event and purge their stores (MPD objects + manifest rows; segment/thumbnail objects + job rows).
+
+Returns **409** while the video is `QUEUED`, `PROCESSING`, or `GENERATING_MANIFEST` (Celery workers are active). An in-progress multipart upload is aborted as part of the delete, and when `video_url` is set the original source object is removed from `viduploads` as well (`cleanup_video_obj(object_key, video_bucket)`, key parsed from `video_url`) — after the row is gone, best effort: a failed object delete is logged and never blocks the delete.
+
+**Response (200):**
+```json
+{
+  "id": "uuid",
+  "deleted": true
+}
+```
+
+| Status | Condition |
+|--------|-----------|
+| 200 | Video deleted, event queued |
+| 403 | Not authorized |
+| 404 | Video not found |
+| 409 | Video is being processed |
+
+> **Existing databases:** the `outbox.video_id` foreign key must no longer block
+> `DELETE` (the event row survives with `video_id = NULL`):
+>
+> ```sql
+> ALTER TABLE outbox DROP CONSTRAINT IF EXISTS outbox_video_id_fkey;
+> ALTER TABLE outbox ALTER COLUMN video_id DROP NOT NULL;
+> ALTER TABLE outbox ADD CONSTRAINT outbox_video_id_fkey
+>   FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE SET NULL;
+> ```
+
 ### Upload Video
 
 ```
@@ -305,9 +340,62 @@ Real-time video status updates via WebSocket. The API gateway proxies the connec
 {
   "video_id": "uuid",
   "status": "COMPLETED",
-  "user_id": 1
+  "user_id": 1,
+  "thumbnail_url": "http://minio:9000/vidthumbnails/uuid/thumb.jpg",
+  "manifest_url": "http://minio:9000/manifest/uuid/manifest.mpd"
 }
 ```
+
+`thumbnail_url` and `manifest_url` default to `null`. They are populated when
+available: `manifest.generating` pushes `thumbnail_url` (also persisted to the
+`videos` row) and `manifest.completed` pushes `manifest_url`, so clients can
+render the poster and start playback straight from the notification.
+
+**Inbound message — segment report (adaptive bitrate loop):**
+
+After every downloaded media segment the player reports metrics on the same socket.
+The service replies with a recommendation for the *next* segment. Malformed or
+unknown messages are logged and ignored — the socket stays open.
+
+```json
+{
+  "type": "segment_report",
+  "video_id": "uuid",
+  "seq": 12,
+  "bandwidth": 4200000,
+  "latency": 0.08,
+  "seg_download_time": 1.4,
+  "current_buffer_duration": 18.5,
+  "current_rendition": "480p"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `seq` | Monotonic per-player counter, echoed back in the reply |
+| `bandwidth` | bps achieved over the segment (`bytes × 8 / seg_download_time`) |
+| `latency` | Seconds to first byte |
+| `seg_download_time` | Seconds for the full segment download |
+| `current_buffer_duration` | Seconds of buffered media ahead of the playhead |
+| `current_rendition` | Active rendition name from the ladder (`360p` … `1080p`) |
+
+**Outbound message — ABR recommendation:**
+
+```json
+{
+  "type": "abr_recommendation",
+  "video_id": "uuid",
+  "seq": 12,
+  "current_rendition": "480p",
+  "recommended_rendition": "720p",
+  "reason": "headroom"
+}
+```
+
+`reason` ∈ `headroom` (upswitch) · `insufficient_bandwidth` / `buffer_low`
+(downswitch) · `no_headroom` / `max_latency` / `hold` (stay put) ·
+`unknown_rendition`. Clients dispatch on the `type` field first — status pushes
+carry no `type`, so existing consumers are unaffected.
 
 **Close codes:**
 
@@ -349,7 +437,7 @@ The video service runs 6 Kafka consumers on startup, each handling a specific ev
 
 | Consumer | Topic | Action |
 |----------|-------|--------|
-| `notification_consumer` | `bucketnotifications` | Stores event, sets video to QUEUED, creates outbox |
+| `notification_consumer` | `bucketnotifications` | Stores event, sets video to QUEUED, creates outbox — if the video row no longer exists, the orphaned upload is removed from `viduploads` via `cleanup_video_obj` |
 | `retry_consumer` | `video.retry` | Resets video to QUEUED, creates outbox |
 | `processing_consumer` | `video.processing` | Sets video status to PROCESSING |
 | `failure_consumer` | `job.failed` / `manifest.failed` | Sets video to FAILED or RETRY |
@@ -373,7 +461,7 @@ video_service/
 │   │   └── manifest_completed_consumer.py   # manifest.completed → COMPLETED
 │   ├── database.py            # Async SQLAlchemy engine + session factory
 │   ├── main.py                # FastAPI app bootstrap + startup/shutdown
-│   ├── minio_client.py        # MinIO presigned URL + multipart helpers
+│   ├── minio_client.py        # MinIO presigned URL + multipart helpers + cleanup_video_obj
 │   ├── producer.py            # KafkaProducer (auto event_id + ISO timestamp)
 │   ├── tasks/
 │   │   ├── __init__.py        # Re-exports all 2 tasks
@@ -395,14 +483,18 @@ video_service/
 │   │   ├── video.py           # Upload, complete, abort, get, retry, WS endpoints
 │   │   └── ready.py           # GET /ready (unified multi-dependency readiness)
 │   └── utils/
-│       └── notification_utils.py  # build_object_url, build_id, extract_video_id
+│       └── notification_utils.py  # build_object_url, build_id, extract_video_id, object_key_from_url/event
 ├── tests/
 │   ├── middleware/             # Middleware unit tests
-│   ├── test_minio_client.py   # MinIO client tests
+│   ├── test_abr.py             # ABR policy recommendation tests
+│   ├── test_consumers.py       # All Kafka consumers
+│   ├── test_minio_client.py   # MinIO client + cleanup_video_obj tests
 │   ├── test_multipart_upload.py  # Multipart upload tests
+│   ├── test_notification_utils.py  # URL/key helper tests
+│   ├── test_outbox_model.py   # Outbox model (FK ON DELETE SET NULL) tests
 │   ├── test_process_notifications.py  # Celery task tests
 │   ├── test_ready.py          # Readiness endpoint tests
-│   ├── test_routes.py         # Upload, get, retry endpoint tests
+│   ├── test_routes.py         # Upload, get, retry, delete endpoint tests
 │   ├── test_upload_endpoint.py  # Upload route tests
 │   ├── test_video_model.py    # Model validation tests
 │   └── test_websocket.py      # WebSocket + proxy signature tests
@@ -429,17 +521,21 @@ python -m pytest tests/test_upload_endpoint.py -v
 | Module | Tests |
 |--------|-------|
 | Middleware (proxy signature + session) | 7 tests |
-| MinIO client (presigned POST) | 2 tests |
+| ABR policy | 17 tests |
+| Kafka consumers | 44 tests |
+| MinIO client (presigned POST, multipart, cleanup) | 5 tests |
 | Multipart upload functions | 4 tests |
+| Notification utils (URL/key helpers) | 9 tests |
+| Outbox model | 3 tests |
 | Process outbox + queued videos tasks | 10 tests |
-| Ready endpoint | 6 tests |
-| Routes (upload, get, retry) | 16 tests |
-| Upload endpoint | 8 tests |
-| Video/Upload models | 14 tests |
-| Lock system | 6 tests |
-| Producer | 4 tests |
-| WebSocket + proxy signature | 17 tests |
-| **Total** | **81 tests** |
+| Ready endpoint | 7 tests |
+| Routes (upload, get, retry, delete) | 28 tests |
+| Upload endpoint | 15 tests |
+| Video/Upload models | 26 tests |
+| WebSocket + proxy signature | 20 tests |
+| **Total** | **195 tests** |
+
+Latest local run: **195 passed**.
 
 ## Docker
 

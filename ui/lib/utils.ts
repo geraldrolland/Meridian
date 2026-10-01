@@ -27,6 +27,17 @@ export function formatDate(iso: string): string {
   }
 }
 
+export function formatDateShort(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
+
 export function formatTime(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return "0:00";
   const s = Math.floor(sec % 60);

@@ -5,6 +5,7 @@ import config from './config';
 import corsMiddleware from './middleware/cors';
 import { authMiddleware } from './middleware/auth';
 import { rateLimiter } from './middleware/ratelimit';
+import { cacheMiddleware } from './middleware/cache';
 import { requestLogger, logger } from './middleware/logger';
 import { errorHandler } from './middleware/errorHandler';
 import proxyRouter from './proxy';
@@ -37,8 +38,10 @@ app.get('/ready', readyHandler);
  * Middleware pipeline order is critical:
  * 1. authMiddleware — validates JWT tokens (skips excluded paths)
  * 2. rateLimiter — enforces per-route rate limits
- * 3. proxyRouter — forwards requests to upstream services
- * 4. express.json() — parses request bodies (AFTER proxy to avoid consuming streams)
+ * 3. cacheMiddleware — serves cached JSON GET responses for CACHE_ROUTES
+ *    (hits never reach the upstream; misses are captured on the way out)
+ * 4. proxyRouter — forwards requests to upstream services
+ * 5. express.json() — parses request bodies (AFTER proxy to avoid consuming streams)
  *
  * The proxy MUST come before express.json() because http-proxy-middleware
  * needs the raw request stream to forward to upstream services. If
@@ -46,6 +49,7 @@ app.get('/ready', readyHandler);
  */
 app.use(authMiddleware);
 app.use(rateLimiter);
+app.use(cacheMiddleware);
 app.use(proxyRouter);
 
 app.use(express.json({ limit: '10mb' }));

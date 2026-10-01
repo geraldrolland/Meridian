@@ -43,7 +43,7 @@ export function Dropzone({ file, onFile, disabled }: DropzoneProps) {
           if (!disabled) handleFiles(e.dataTransfer.files);
         }}
         className={cn(
-          "flex w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed px-6 py-14 text-center transition-colors",
+          "flex w-full flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed px-6 py-14 text-center transition-colors",
           dragging
             ? "border-brand-500 bg-brand-500/10"
             : "border-zinc-700 bg-zinc-900/40 hover:border-zinc-500",
@@ -51,16 +51,16 @@ export function Dropzone({ file, onFile, disabled }: DropzoneProps) {
         )}
         aria-label="Upload video file"
       >
-        <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-500/10 text-brand-400">
+        <span className="flex h-14 w-14 items-center justify-center rounded-lg bg-brand-500/10 text-brand-400">
           <UploadCloud className="h-7 w-7" />
         </span>
         <span className="font-display text-lg font-semibold text-zinc-100">
-          {file ? file.name : "Drop a video here"}
+          {file ? file.name : "Drop a video here, or browse"}
         </span>
         <span className="text-sm text-zinc-500">
           {file
             ? "Click or drop to replace"
-            : "or click to browse · mp4, mov, avi, mkv, webm, flv, wmv"}
+            : "mp4 · mov · avi · mkv · webm · flv · wmv"}
         </span>
       </button>
       <input

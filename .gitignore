@@ -29,6 +29,7 @@ venv/
 .pytest_cache/
 .coverage
 htmlcov/
+artifacts/
 
 # Node
 node_modules/
@@ -48,3 +49,13 @@ docker-compose.override.yml
 *.zip
 *.tar.gz
 *.rar
+
+# Local-only media / documents
+*.mp4
+*.pdf
+
+# Local-only tooling (not part of the deliverable)
+.opencode/
+selenium_e2e.py
+probe_seek.py
+requirements-e2e.txt

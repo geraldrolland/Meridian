@@ -35,7 +35,7 @@ export default function RegisterPage() {
       await register(email, password);
       toast({
         title: "Account created",
-        description: "Sign in to continue",
+        description: "Sign in.",
         variant: "success",
       });
       router.push(`/login?next=/dashboard`);
@@ -53,7 +53,7 @@ export default function RegisterPage() {
       <motion.div
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45 }}
+        transition={{ duration: 0.25 }}
         className="w-full max-w-md"
       >
         <div className="mb-8 flex justify-center">
@@ -74,7 +74,7 @@ export default function RegisterPage() {
                   autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@company.com"
+                  placeholder="jane@studio.co"
                 />
                 {errors.email && <p className="text-xs text-red-400">{errors.email}</p>}
               </div>

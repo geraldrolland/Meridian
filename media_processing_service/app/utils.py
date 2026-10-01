@@ -39,6 +39,12 @@ def get_video_framerate(video_file_path: str) -> float:
     return num / den
 
 
+def has_audio_stream(file_path: str) -> bool:
+    """Return whether a media file contains at least one audio stream."""
+    probe = ffmpeg.probe(file_path)
+    return any(stream.get("codec_type") == "audio" for stream in probe.get("streams", []))
+
+
 def build_object_url(object_key: str, bucket_name: str) -> str:
     """Build a full MinIO object URL from an object key and bucket name.
 

@@ -1,16 +1,41 @@
 import { getAccessToken, refreshAccessToken } from "@/lib/auth/token-store";
-import type { WsNotification } from "@/lib/types";
+import type { WsAbrRecommendation, WsNotification } from "@/lib/types";
 
 export type WsStatus = "connecting" | "open" | "closed" | "error";
+
+/** One backoff delay per reconnect attempt, in ms — 5 retries max. */
+const RETRY_DELAYS_MS = [5000, 10000, 15000, 20000, 25000] as const;
+const JITTER_RATIO = 0.1;
+
+/** 5000 -> 4500..5500, 10000 -> 9000..11000, … so retries do not sync up. */
+function withJitter(base: number): number {
+  return base * (1 - JITTER_RATIO + Math.random() * 2 * JITTER_RATIO);
+}
 
 export interface VideoWsHandle {
   close: () => void;
   status: () => WsStatus;
+  /** Send a JSON frame to the video service; false if the socket is not open. */
+  send: (payload: unknown) => boolean;
+}
+
+/**
+ * A frame arrives as string, Blob or ArrayBuffer depending on its opcode, so
+ * a proxy that re-frames text as binary must not make us drop the notification.
+ */
+async function frameToText(data: unknown): Promise<string> {
+  if (typeof data === "string") return data;
+  if (data instanceof Blob) return data.text();
+  if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(data);
+  }
+  return "";
 }
 
 export function connectVideoWs(
   onMessage: (msg: WsNotification) => void,
   onStatus?: (s: WsStatus) => void,
+  onAbr?: (msg: WsAbrRecommendation) => void,
 ): VideoWsHandle {
   let ws: WebSocket | null = null;
   let closed = false;
@@ -38,7 +63,9 @@ export function connectVideoWs(
     let token = getAccessToken();
     if (!token) token = await refreshAccessToken();
     if (!token || closed) {
-      setStatus("error");
+      if (closed) return;
+      // A missing token is a failed attempt too: it burns one of the 5 retries.
+      scheduleReconnect();
       return;
     }
 
@@ -60,10 +87,17 @@ export function connectVideoWs(
       setStatus("open");
     };
 
-    socket.onmessage = (event) => {
+    socket.onmessage = async (event) => {
       try {
-        const data = JSON.parse(event.data as string) as WsNotification;
-        if (data && data.video_id) onMessage(data);
+        const data = JSON.parse(await frameToText(event.data)) as
+          | (WsNotification & { type?: string })
+          | WsAbrRecommendation;
+        if (!data || !data.video_id) return;
+        if (data.type === "abr_recommendation") {
+          onAbr?.(data as WsAbrRecommendation);
+          return;
+        }
+        onMessage(data as WsNotification);
       } catch {
         /* ignore non-json */
       }
@@ -85,11 +119,17 @@ export function connectVideoWs(
 
   const scheduleReconnect = () => {
     if (closed) return;
-    const delay = Math.min(15000, 1000 * 2 ** attempt);
+    const delay = RETRY_DELAYS_MS[attempt];
+    if (delay === undefined) {
+      // Budget of MAX_RETRIES exhausted — stay offline until remount.
+      setStatus("error");
+      return;
+    }
     attempt += 1;
     timer = setTimeout(() => {
+      timer = null;
       void open();
-    }, delay);
+    }, withJitter(delay));
   };
 
   void open();
@@ -123,5 +163,14 @@ export function connectVideoWs(
       setStatus("closed");
     },
     status: () => status,
+    send: (payload: unknown) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      try {
+        ws.send(JSON.stringify(payload));
+        return true;
+      } catch {
+        return false;
+      }
+    },
   };
 }

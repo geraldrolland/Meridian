@@ -60,6 +60,32 @@ export interface WsNotification {
   video_id: string;
   status: VideoStatus;
   user_id: number;
+  /** Populated on GENERATING_MANIFEST (also persisted server-side). */
+  thumbnail_url?: string | null;
+  /** Populated on COMPLETED. */
+  manifest_url?: string | null;
+}
+
+/** Client -> server: per-segment playback metrics (adaptive bitrate loop). */
+export interface WsSegmentReport {
+  type: "segment_report";
+  video_id: string;
+  seq: number;
+  bandwidth: number; // bps achieved over the segment download
+  latency: number; // seconds to first byte
+  seg_download_time: number; // seconds for the full segment download
+  current_buffer_duration: number; // seconds buffered ahead of playhead
+  current_rendition: string; // e.g. "720p"
+}
+
+/** Server -> client: rendition to use for the next segment download. */
+export interface WsAbrRecommendation {
+  type: "abr_recommendation";
+  video_id: string;
+  seq: number;
+  current_rendition: string;
+  recommended_rendition: string;
+  reason: string;
 }
 
 export function isMultipartUpload(upload: UploadPlan): upload is MultipartUpload {

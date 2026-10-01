@@ -35,12 +35,23 @@ class Settings(BaseSettings):
         multipart_threshold: File size in bytes above which multipart upload is used (100 MB).
         default_part_size: Part size in bytes for multipart uploads (5 MB).
         log_level: Python logging level.
+        abr_rendition_ladder: Rendition name -> bitrate in bps, ascending. Must stay
+            in sync with the media_processing_service renditions (transcoder output).
+        abr_segment_duration: Segment duration in seconds (CMAF segments).
+        abr_safety_factor: Fraction of measured bandwidth treated as safe to spend.
+        abr_buffer_low: Buffer seconds below which we downswitch (or stop upswitching).
+        abr_buffer_high: Buffer seconds required before an upswitch is allowed.
+        abr_upswitch_margin: Headroom required over the candidate bitrate to upswitch.
+        abr_downswitch_margin: Safe bandwidth below this fraction of the current
+            bitrate triggers a downswitch.
+        abr_max_latency: Latency seconds above which upswitching is blocked.
     """
     kafka_bootstrap_servers: str = "kafka:29092"
     kafka_topic: str = "bucketnotifications"
     kafka_consumer_group_id: str = "meridian-video-consumer-group"
     kafka_auto_offset_reset: str = "earliest"
-    kafka_processing_topic: str = "video.processing"
+    kafka_publish_timeout: int = 30
+    kafka_processing_topic: str = "job.processing"
     kafka_processing_consumer_group_id: str = "meridian-video-processing-consumer-group"
     kafka_job_failed_topic: str = "job.failed"
     kafka_manifest_failed_topic: str = "manifest.failed"
@@ -69,6 +80,23 @@ class Settings(BaseSettings):
     outbox_max_retry: int = 5
     video_max_retry: int = 5
     log_level: str = "info"
+
+    # --- Adaptive bitrate recommendation (WebSocket ABR loop) ---
+    abr_rendition_ladder: dict[str, int] = {
+        "360p": 800_000,
+        "480p": 1_400_000,
+        "720p": 2_500_000,
+        "1080p": 4_500_000,
+    }
+    abr_segment_duration: float = 6.0
+    abr_safety_factor: float = 0.75
+    abr_buffer_low: float = 9.0
+    # dash.js plateaus at a ~12s video buffer (DEFAULT_MIN_BUFFER_TIME), so a
+    # threshold above that leaves the upswitch branch permanently unreachable.
+    abr_buffer_high: float = 10.0
+    abr_upswitch_margin: float = 1.10
+    abr_downswitch_margin: float = 0.85
+    abr_max_latency: float = 0.6
 
     @property
     def db_dsn(self) -> str:

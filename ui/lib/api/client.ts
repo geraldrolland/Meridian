@@ -98,6 +98,8 @@ export const api = {
     apiRequest<T>(path, { ...options, method: "POST", body }),
   put: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     apiRequest<T>(path, { ...options, method: "PUT", body }),
+  del: <T>(path: string, options?: RequestOptions) =>
+    apiRequest<T>(path, { ...options, method: "DELETE" }),
 };
 
 export { setAccessToken };

@@ -5,19 +5,98 @@
   --font-display: var(--font-space), var(--font-inter), ui-sans-serif, sans-serif;
   --font-mono: var(--font-jetbrains), ui-monospace, monospace;
 
-  --color-brand-50: #fff1f2;
-  --color-brand-100: #ffe1e4;
-  --color-brand-200: #ffc6cc;
-  --color-brand-300: #ff9aa4;
-  --color-brand-400: #ff6273;
-  --color-brand-500: #ef192a;
-  --color-brand-600: #d00e20;
-  --color-brand-700: #ae0a1a;
-  --color-brand-800: #900d1c;
-  --color-brand-900: #7a1020;
-  --color-brand-950: #44030c;
+  /* Meridian Blue ramp - brand actions, links, key data (signature #3358FF) */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #dce4ff;
+  --color-brand-200: #b9c7ff;
+  --color-brand-300: #7c93ff;
+  --color-brand-400: #5b78ff;
+  --color-brand-500: #3358ff;
+  --color-brand-600: #2947d6;
+  --color-brand-700: #1f38ad;
+  --color-brand-800: #172a85;
+  --color-brand-900: #121f61;
+  --color-brand-950: #0b1338;
 
-  --animate-fade-in: fade-in 0.4s ease-out;
+  /* Neutrals - Midnight foundation + Slate scale */
+  --color-zinc-50: #f7f8fc; /* Paper */
+  --color-zinc-100: #eef0f7; /* Slate 100 */
+  --color-zinc-200: #d9dde9;
+  --color-zinc-300: #c3c8da; /* Slate 300 */
+  --color-zinc-400: #9aa2bf;
+  --color-zinc-500: #6b7392; /* Slate 500 */
+  --color-zinc-600: #565f82;
+  --color-zinc-700: #3e4869;
+  --color-zinc-800: #2a3350; /* Slate 700 */
+  --color-zinc-900: #141b33; /* elevated card surface */
+  --color-zinc-950: #0a1024; /* Midnight */
+
+  /* Coral - failed states, errors, destructive */
+  --color-red-50: #fff1f1;
+  --color-red-100: #ffe1e2;
+  --color-red-200: #ffc7c9;
+  --color-red-300: #ff9ca0;
+  --color-red-400: #ff767c;
+  --color-red-500: #ff5a5f;
+  --color-red-600: #e6484d;
+  --color-red-700: #c1383d;
+  --color-red-800: #a03236;
+  --color-red-900: #852f32;
+  --color-red-950: #2b1215;
+
+  /* Lagoon Teal - success, ready, healthy */
+  --color-emerald-50: #e7faf7;
+  --color-emerald-100: #c8f4ee;
+  --color-emerald-200: #92e8dd;
+  --color-emerald-300: #5cd9cb;
+  --color-emerald-400: #2cc7b7;
+  --color-emerald-500: #10b7a5;
+  --color-emerald-600: #0d9a8b;
+  --color-emerald-700: #0f7b70;
+  --color-emerald-800: #115f59;
+  --color-emerald-900: #134f4b;
+  --color-emerald-950: #0a2e2c;
+
+  /* Signal Amber - the playhead, needs attention (used sparingly) */
+  --color-amber-50: #fff7e6;
+  --color-amber-100: #ffeec2;
+  --color-amber-200: #ffdd8a;
+  --color-amber-300: #ffcb52;
+  --color-amber-400: #ffbe3b;
+  --color-amber-500: #ffb224;
+  --color-amber-600: #e69510;
+  --color-amber-700: #bf7609;
+  --color-amber-800: #995e0d;
+  --color-amber-900: #7c4d0f;
+  --color-amber-950: #3f2505;
+
+  /* Sky - uploading / info, tints, focus ring on dark */
+  --color-sky-50: #eef3ff;
+  --color-sky-100: #dfe7ff;
+  --color-sky-200: #c3d0ff;
+  --color-sky-300: #b9c9ff;
+  --color-sky-400: #9db3ff;
+  --color-sky-500: #7e99ff;
+  --color-sky-600: #6279f5;
+  --color-sky-700: #4f5fe0;
+  --color-sky-800: #414db5;
+  --color-sky-900: #38468f;
+  --color-sky-950: #1f234d;
+
+  /* Blue (generic utility name) - data viz / progress, same signature */
+  --color-blue-50: #eef2ff;
+  --color-blue-100: #dce4ff;
+  --color-blue-200: #b9c7ff;
+  --color-blue-300: #7c93ff;
+  --color-blue-400: #5b78ff;
+  --color-blue-500: #3358ff;
+  --color-blue-600: #2947d6;
+  --color-blue-700: #1f38ad;
+  --color-blue-800: #172a85;
+  --color-blue-900: #121f61;
+  --color-blue-950: #0b1338;
+
+  --animate-fade-in: fade-in 0.2s ease-out;
 
   @keyframes fade-in {
     from {
@@ -32,8 +111,8 @@
 }
 
 :root {
-  --background: #09090b;
-  --foreground: #fafafa;
+  --background: #0a1024; /* Midnight */
+  --foreground: #eef0f7; /* Slate 100 */
   color-scheme: dark;
 }
 
@@ -52,7 +131,7 @@ body {
   background: color-mix(in oklab, var(--color-brand-500) 40%, transparent);
 }
 
-/* Subtle brand grain / glow helpers */
+/* Subtle brand grid / glow helpers */
 .bg-grid {
   background-image:
     linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
@@ -62,6 +141,6 @@ body {
 
 .bg-glow-brand {
   background:
-    radial-gradient(ellipse 60% 50% at 50% -10%, rgba(239, 25, 42, 0.28), transparent 60%),
-    radial-gradient(ellipse 40% 40% at 80% 20%, rgba(239, 25, 42, 0.08), transparent 50%);
+    radial-gradient(ellipse 60% 50% at 50% -10%, rgba(51, 88, 255, 0.28), transparent 60%),
+    radial-gradient(ellipse 40% 40% at 80% 20%, rgba(51, 88, 255, 0.08), transparent 50%);
 }

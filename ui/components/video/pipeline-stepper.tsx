@@ -32,7 +32,7 @@ export function PipelineStepper({ status }: { status: VideoStatus }) {
                     className={cn(
                       "flex h-9 w-9 items-center justify-center rounded-full border text-xs font-semibold",
                       done && "border-emerald-500/50 bg-emerald-500/15 text-emerald-400",
-                      active && "border-brand-500/60 bg-brand-500/15 text-brand-400 shadow-[0_0_20px_-4px_rgba(239,25,42,0.6)]",
+                      active && "border-brand-500/60 bg-brand-500/15 text-brand-400 shadow-[0_0_20px_-4px_rgba(51,88,255,0.6)]",
                       failedHere && "border-red-500/50 bg-red-500/15 text-red-400",
                       !done && !active && !failedHere && "border-zinc-700 bg-zinc-900 text-zinc-500",
                     )}

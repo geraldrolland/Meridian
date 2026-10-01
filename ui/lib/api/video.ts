@@ -34,3 +34,7 @@ export async function abortMultipart(
 export async function retryVideo(videoId: string): Promise<Video> {
   return api.post<Video>(`/api/video/${videoId}/retry`);
 }
+
+export async function deleteVideo(videoId: string): Promise<{ id: string; deleted: boolean }> {
+  return api.del<{ id: string; deleted: boolean }>(`/api/video/${videoId}`);
+}

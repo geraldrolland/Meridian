@@ -63,6 +63,7 @@ async def consume_manifest_completed_messages(consumer: AIOKafkaConsumer) -> Non
                                 video_id=video_id,
                                 status=VideoStatus.COMPLETED.value,
                                 user_id=video.user_id,
+                                manifest_url=manifest_url or video.manifest_url,
                             )
 
                 await consumer.commit(

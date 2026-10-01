@@ -37,7 +37,7 @@ function LoginForm() {
     } catch (err) {
       toast({
         title: "Sign in failed",
-        description: err instanceof Error ? err.message : "Try again",
+        description: err instanceof Error ? err.message : "Email or password is incorrect",
         variant: "error",
       });
     }
@@ -48,7 +48,7 @@ function LoginForm() {
       <motion.div
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45 }}
+        transition={{ duration: 0.25 }}
         className="w-full max-w-md"
       >
         <div className="mb-8 flex justify-center">
@@ -71,7 +71,7 @@ function LoginForm() {
                   onChange={(e) => setEmail(e.target.value)}
                   aria-invalid={!!errors.email}
                   aria-describedby={errors.email ? "email-error" : undefined}
-                  placeholder="you@company.com"
+                  placeholder="jane@studio.co"
                 />
                 {errors.email && (
                   <p id="email-error" className="text-xs text-red-400">
@@ -104,7 +104,7 @@ function LoginForm() {
             <p className="mt-6 text-center text-sm text-zinc-400">
               No account?{" "}
               <Link href="/register" className="font-medium text-brand-400 hover:underline">
-                Create one
+                Create account
               </Link>
             </p>
           </CardContent>

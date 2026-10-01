@@ -4,20 +4,22 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Film, Plus, RefreshCw } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AuthGuard } from "@/components/auth/auth-guard";
 import { AppShell } from "@/components/layout/app-shell";
+import { ConnectionPill } from "@/components/layout/connection-pill";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { VideoCard } from "@/components/video/video-card";
 import { getVideo } from "@/lib/api/video";
-import { connectVideoWs, type VideoWsHandle } from "@/lib/realtime/ws";
-import { getTrackedVideoIds } from "@/lib/video/library";
+import { connectVideoWs, type VideoWsHandle, type WsStatus } from "@/lib/realtime/ws";
+import { getTrackedVideoIds, untrackVideoId } from "@/lib/video/library";
 import type { Video, WsNotification } from "@/lib/types";
 
 function LibraryContent() {
   const queryClient = useQueryClient();
   const ids = useMemo(() => getTrackedVideoIds(), []);
+  const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["library", ids],
@@ -36,20 +38,28 @@ function LibraryContent() {
     handle = connectVideoWs((msg: WsNotification) => {
       void queryClient.invalidateQueries({ queryKey: ["library"] });
       void queryClient.invalidateQueries({ queryKey: ["video", msg.video_id] });
-    });
+    }, setWsStatus);
     return () => handle?.close();
   }, [queryClient]);
 
   const videos = data ?? [];
 
+  const onVideoDeleted = (videoId: string) => {
+    untrackVideoId(videoId);
+    void queryClient.invalidateQueries({ queryKey: ["library"] });
+    void queryClient.invalidateQueries({ queryKey: ["video", videoId] });
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="font-display text-3xl font-bold tracking-tight">Library</h1>
-          <p className="mt-1 text-sm text-zinc-400">
-            Videos tracked on this device · live updates via WebSocket
-          </p>
+          <h1 className="font-display text-4xl font-bold leading-[42px] tracking-tight">Library</h1>
+          <p className="mt-1 text-sm text-zinc-400">Videos tracked on this device</p>
+          <div className="mt-2 flex items-center gap-2 text-xs text-zinc-400">
+            <span>Live updates on</span>
+            <ConnectionPill status={wsStatus} />
+          </div>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => void refetch()}>
@@ -75,7 +85,7 @@ function LibraryContent() {
           ))}
         </div>
       ) : isError ? (
-        <div className="rounded-2xl border border-red-500/30 bg-red-950/30 p-8 text-center">
+        <div className="rounded-xl border border-red-500/30 bg-red-950/30 p-8 text-center">
           <p className="font-medium text-red-300">Could not load videos</p>
           <Button className="mt-4" variant="outline" onClick={() => void refetch()}>
             Try again
@@ -85,9 +95,9 @@ function LibraryContent() {
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-700 bg-zinc-900/30 px-6 py-20 text-center"
+          className="flex flex-col items-center justify-center rounded-xl border border-dashed border-zinc-700 bg-zinc-900/30 px-6 py-20 text-center"
         >
-          <span className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-500/10 text-brand-400">
+          <span className="mb-4 flex h-14 w-14 items-center justify-center rounded-xl bg-brand-500/10 text-brand-400">
             <Film className="h-7 w-7" />
           </span>
           <h2 className="font-display text-xl font-semibold">No videos yet</h2>
@@ -104,7 +114,7 @@ function LibraryContent() {
       ) : (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {videos.map((v, i) => (
-            <VideoCard key={v.id} video={v} index={i} />
+            <VideoCard key={v.id} video={v} index={i} onDeleted={onVideoDeleted} />
           ))}
         </div>
       )}
