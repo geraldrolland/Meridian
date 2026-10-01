@@ -2,6 +2,7 @@ const mockRedis = {
   get: jest.fn().mockResolvedValue(null),
   set: jest.fn().mockResolvedValue('OK'),
   del: jest.fn().mockResolvedValue(1),
+  scan: jest.fn().mockResolvedValue(['0', [] as string[]]),
   incr: jest.fn().mockResolvedValue(1),
   expire: jest.fn().mockResolvedValue(1),
   ttl: jest.fn().mockResolvedValue(900),

@@ -13,37 +13,38 @@ export const STATUS_META: Record<
   { label: string; description: string; tone: "info" | "neutral" | "progress" | "success" | "warning" | "danger" }
 > = {
   AWAITING_UPLOAD: {
-    label: "Uploading",
-    description: "Waiting for storage confirmation",
+    label: "UPLOADING",
+    description: "Upload received — waiting for storage confirmation",
     tone: "info",
   },
   QUEUED: {
-    label: "Queued",
-    description: "Waiting for the processing pipeline",
+    label: "QUEUED",
+    description: "Queued for the processing pipeline",
     tone: "neutral",
   },
   PROCESSING: {
-    label: "Processing",
-    description: "Transcoding 360p–1080p renditions",
+    label: "PROCESSING",
+    description:
+      "Transcoding 360p to 1080p renditions and generating the thumbnail. You can leave this page — we'll tell you when it's ready.",
     tone: "progress",
   },
   GENERATING_MANIFEST: {
-    label: "Finalizing",
-    description: "Building DASH manifest",
+    label: "FINALIZING",
+    description: "Building the DASH manifest",
     tone: "progress",
   },
   COMPLETED: {
-    label: "Ready",
+    label: "READY",
     description: "Playback available",
     tone: "success",
   },
   FAILED: {
-    label: "Failed",
+    label: "FAILED",
     description: "Processing could not complete",
     tone: "danger",
   },
   RETRY: {
-    label: "Needs retry",
+    label: "NEEDS ATTENTION",
     description: "You can requeue this video",
     tone: "warning",
   },
@@ -51,6 +52,21 @@ export const STATUS_META: Record<
 
 export function statusLabel(status: VideoStatus): string {
   return STATUS_META[status]?.label ?? status;
+}
+
+/**
+ * Statuses where the owner may delete the video — mirrors the service's
+ * 409 guard (QUEUED / PROCESSING / GENERATING_MANIFEST are blocked).
+ */
+export const DELETABLE_STATUSES: VideoStatus[] = [
+  "AWAITING_UPLOAD",
+  "COMPLETED",
+  "FAILED",
+  "RETRY",
+];
+
+export function canDeleteVideo(status: VideoStatus): boolean {
+  return DELETABLE_STATUSES.includes(status);
 }
 
 export function statusTone(status: VideoStatus): string {
@@ -65,8 +81,8 @@ export function pipelineStepIndex(status: VideoStatus): number {
 
 export const STEPS = [
   { key: "AWAITING_UPLOAD", title: "Upload received" },
-  { key: "QUEUED", title: "Queued" },
-  { key: "PROCESSING", title: "Transcode" },
-  { key: "GENERATING_MANIFEST", title: "Manifest" },
-  { key: "COMPLETED", title: "Ready" },
+  { key: "QUEUED", title: "Queued for pipeline" },
+  { key: "PROCESSING", title: "Transcode & thumbnail" },
+  { key: "GENERATING_MANIFEST", title: "DASH manifest" },
+  { key: "COMPLETED", title: "Ready to watch" },
 ] as const;

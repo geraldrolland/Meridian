@@ -32,3 +32,14 @@ export function clearTrackedVideoIds(): void {
     /* ignore */
   }
 }
+
+/** Drop a deleted video from the local library list. */
+export function untrackVideoId(id: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const ids = getTrackedVideoIds().filter((x) => x !== id);
+    window.localStorage.setItem(KEY, JSON.stringify(ids));
+  } catch {
+    /* ignore */
+  }
+}

@@ -78,6 +78,15 @@ video.queued event
 └─────────────────────────────────────┘
 ```
 
+### Video renditions carry no audio track
+
+Each video rendition is remuxed with `-map 0:v:0 -an`, so `360p`–`1080p` segments are video-only and the audio rendition is a separate `mp4a.40.2` AdaptationSet in the MPD. `init.mp4` is generated from the video stream alone, so its declared codec must match the segments that follow.
+
+Keeping the source AAC track in a rendition breaks that contract: the browser raises
+`MEDIA_ERR_DECODE: CHUNK_DEMUXER_ERROR_APPEND_FAILED — audio object type 0x40 does not match what is specified in the mimetype` and playback never starts. The audio rendition keeps its own track (`-vn -acodec`).
+
+Covered by `test_rendition_command_drops_audio` in `tests/test_media_service.py`.
+
 ## Tech Stack
 
 | Component | Technology |
@@ -159,9 +168,33 @@ media_processing_service/
 | Topic | Partitions | Purpose |
 |-------|------------|---------|
 | `video.queued` | 8 | Incoming video events from video service |
+| `video.deleted` | 4 | Incoming deletion events — purge jobs for the video |
 | `bucketnotifications` | 4 | MinIO bucket notification events |
 | `job.completed` | 4 | Published when a job completes processing |
 | `job.failed` | 4 | Published when a job fails processing |
+
+### `video.deleted` cleanup
+
+When video_service deletes a video it commits a `video.deleted` event
+(`{"video_id": "uuid"}`) in the same transaction. The consumer fetches every
+`jobs` row for that video and runs `cleanup_jobs(jobs, db)`:
+
+1. per job: upload files → object keys → concurrent deletes from
+   `vidsegments` (one thread per key), thumbnail object from
+   `vidthumbnails`, local temp files
+2. delete the job row — `transcode_tasks` and `upload_tasks` cascade
+3. one commit after all jobs are removed
+
+> **Existing databases:**
+>
+> ```sql
+> ALTER TABLE transcode_tasks DROP CONSTRAINT IF EXISTS transcode_tasks_job_id_fkey;
+> ALTER TABLE transcode_tasks ADD CONSTRAINT transcode_tasks_job_id_fkey
+>   FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE;
+> ALTER TABLE upload_tasks DROP CONSTRAINT IF EXISTS upload_tasks_transcode_id_fkey;
+> ALTER TABLE upload_tasks ADD CONSTRAINT upload_tasks_transcode_id_fkey
+>   FOREIGN KEY (transcode_id) REFERENCES transcode_tasks(id) ON DELETE CASCADE;
+> ```
 
 ## Database Schema
 
@@ -181,7 +214,7 @@ media_processing_service/
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | VARCHAR(36) PK | UUID |
-| `job_id` | VARCHAR(128) FK | Parent job |
+| `job_id` | VARCHAR(128) FK | Parent job (`ON DELETE CASCADE`) |
 | `status` | VARCHAR(16) | QUEUED → PROCESSING → COMPLETED / FAILED |
 | `input_file` | VARCHAR(1024) | Local segment file path |
 
@@ -189,7 +222,7 @@ media_processing_service/
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | VARCHAR(36) PK | UUID |
-| `transcode_id` | VARCHAR(36) FK | Parent transcode task |
+| `transcode_id` | VARCHAR(36) FK | Parent transcode task (`ON DELETE CASCADE`) |
 | `upload_files` | JSON | List of file paths to upload |
 | `status` | VARCHAR(16) | PENDING → COMPLETED / FAILED |
 
@@ -221,6 +254,7 @@ All settings are loaded from environment variables via `pydantic-settings`. Copy
 |----------|---------|-------------|
 | `KAFKA_BOOTSTRAP_SERVERS` | `kafka:29092` | Kafka broker addresses |
 | `KAFKA_TOPIC` | `video.queued` | Incoming video topic |
+| `KAFKA_VIDEO_DELETED_TOPIC` | `video.deleted` | Incoming topic (deletion cleanup) |
 | `DATABASE_URL` | `postgresql+asyncpg://...` | PostgreSQL connection |
 | `REDIS_HOST` | `redis` | Redis host for distributed locks |
 | `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint |
@@ -288,11 +322,12 @@ python -m pytest tests/ -v
 | `test_consumer.py` | Kafka consumer persistence |
 | `test_tasks.py` | Queued/transcode/upload/completion/failed/outbox Celery tasks |
 | `test_media_service.py` | Segmentation, transcoding, init segments, thumbnails |
+| `test_models_fk.py` | Foreign-key constraints across Job / TranscodeTask / UploadTask / Outbox |
 | `test_utils.py` | Object URL/key helpers, duration, framerate |
 | `test_smoke.py` | Imports and router wiring |
 | Load/perf | Optional autocannon / benchmark suites |
 
-Latest local run: **98 passed**.
+Latest local run: **123 passed**.
 
 ## License
 

@@ -83,6 +83,8 @@ The gateway starts on `http://127.0.0.1:3000` by default.
 | `REDIS_DB` | Redis database number | `0` |
 | `PROXY_SECRET` | HMAC secret for signed proxy headers | `change-me-in-production` |
 | `ROUTES` | JSON array of route definitions | `[]` |
+| `CACHE_ROUTES` | Comma-separated path prefixes cached for GET (JSON, 200) | `/api/video` |
+| `CACHE_TTL` | Response cache TTL in seconds | `420` (7 min) |
 
 ### Route Configuration
 
@@ -176,6 +178,24 @@ Capacity: 10, Refill: 2 tokens/sec
 5. Attaches session data (`userId`, `role`, `email`) to `req.user`
 6. Paths in `AUTH_EXCLUDE_PATHS` bypass authentication
 
+## Response Cache
+
+Caches authenticated JSON GET responses whose path starts with one of the
+`CACHE_ROUTES` prefixes (`cache:resp:{userId}:{originalUrl}`, TTL
+`CACHE_TTL`). Only 200 responses with a JSON content type are stored; misses,
+parse errors and Redis errors fail open to the upstream service. Non-GET
+requests are never cached.
+
+Staleness is prevented from two directions:
+
+- **WebSocket status pushes** — when the gateway forwards a status frame, it
+  first deletes that video's cached entries (`invalidateVideoCache`) so the
+  client's realtime-triggered refetch cannot read a stale response.
+- **`DELETE /api/video/{id}`** — before proxying the request, the gateway
+  flushes *every* cached video response (`invalidateAllVideoCache`,
+  pattern `cache:resp:*:/api/video*`), so detail and list entries for the
+  deleted video (and any refreshed by it) are gone. The flush fails open.
+
 ## Proxy
 
 - Requests matching a route prefix are forwarded to the target service
@@ -254,6 +274,7 @@ src/
 │   └── refreshToken.ts       # Token refresh endpoint
 ├── middleware/
 │   ├── auth.ts               # JWT authentication middleware
+│   ├── cache.ts              # Redis response cache + video invalidation
 │   ├── cors.ts               # CORS configuration
 │   ├── errorHandler.ts       # Global error handler
 │   ├── logger.ts             # Winston logger + request logging
@@ -281,6 +302,18 @@ npm run test:integration  # Integration tests (requires Redis)
 npm run test:smoke    # Smoke tests (requires running server)
 npm run test:all      # Unit + integration + smoke
 ```
+
+### Test Coverage
+
+| Suite | Tests |
+|-------|-------|
+| Config | Environment parsing, defaults, route validation |
+| Middleware (auth, cache, errorHandler, logger) | JWT auth, Redis response cache, error handling, logging |
+| Rate limiting (fixedWindow, tokenBucket, index, utils) | Strategy behaviour + route matching |
+| Proxy (HTTP + WebSocket) | HMAC signing, upstream forwarding, WS session auth |
+| Integration (health, ready) | 2 skipped — require a live Redis |
+
+Latest local run: **116 passed, 2 skipped** (14 of 16 suites).
 
 ### Load & Performance
 

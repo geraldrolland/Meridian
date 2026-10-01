@@ -5,8 +5,11 @@
 Covers: invalid route, register, login, refresh, /me, upload video,
 MinIO bucket notification, DB verification, outbox event, full
 processing pipeline (segmentation, transcoding, upload, completion),
-manifest generation → video COMPLETED + manifest_url, a simulated DASH
-player that downloads the MPD and each segment sequentially, and logout.
+manifest generation → video COMPLETED + manifest_url + thumbnail_url
+persisted, a simulated DASH player that downloads the MPD and each
+segment sequentially, the failed-job and retry flows, then DELETE
+/gateway cache-flush + cascading purge (rows, manifest, segments,
+thumbnail), and logout.
 
 Usage:
     python e2e_test.py
@@ -636,10 +639,11 @@ _assert(
 print("\n[20] Poll videos (video-db) → expect status=COMPLETED and manifest_url set (90s)")
 video_completed = False
 stored_manifest_url = None
+stored_thumbnail_url = None
 for _ in range(90):
     vcur = conn.cursor()
     vcur.execute(
-        "SELECT status, manifest_url FROM videos WHERE id = %s",
+        "SELECT status, manifest_url, thumbnail_url FROM videos WHERE id = %s",
         (video_id,),
     )
     row = vcur.fetchone()
@@ -647,11 +651,38 @@ for _ in range(90):
     if row and row[0] == "COMPLETED" and row[1]:
         video_completed = True
         stored_manifest_url = row[1]
+        stored_thumbnail_url = row[2]
         print(f"  Video status=COMPLETED, manifest_url={stored_manifest_url}")
+        print(f"  thumbnail_url={stored_thumbnail_url}")
         break
     time.sleep(1)
 _assert(video_completed, "video status=COMPLETED with manifest_url persisted")
 _assert(stored_manifest_url == manifest_url, "video.manifest_url matches manifest task URL")
+_assert(stored_thumbnail_url is not None, "video.thumbnail_url persisted at GENERATING_MANIFEST")
+_assert(
+    stored_thumbnail_url and "/vidthumbnails/" in stored_thumbnail_url,
+    f"thumbnail_url points at vidthumbnails bucket (got {stored_thumbnail_url})",
+)
+
+# The thumbnail flows: job.completed payload → manifest.generating payload →
+# video service persists it. Verify the intermediate event carried it.
+man_cur.execute(
+    "SELECT payload FROM outbox WHERE topic = 'manifest.generating' "
+    "AND payload->>'video_id' = %s ORDER BY created_at DESC LIMIT 1",
+    (video_id,),
+)
+mg_row = man_cur.fetchone()
+mg_payload = None
+if mg_row:
+    mg_payload = mg_row[0] if isinstance(mg_row[0], dict) else json.loads(mg_row[0])
+_assert(
+    mg_payload is not None and mg_payload.get("thumbnail_url"),
+    "manifest.generating payload includes thumbnail_url",
+)
+_assert(
+    mg_payload is not None and mg_payload.get("thumbnail_url") == stored_thumbnail_url,
+    "persisted thumbnail_url matches manifest.generating payload",
+)
 
 
 # ── Step 21: GET video via API → includes manifest_url ─────────────
@@ -678,6 +709,7 @@ r = requests.get(
 _assert(r.status_code == 200, f"GET video status=200 (got {r.status_code})")
 body = r.json()
 _assert(body.get("manifest_url") == manifest_url, "API response includes manifest_url")
+_assert(body.get("thumbnail_url") == stored_thumbnail_url, "API response includes thumbnail_url")
 _assert(body.get("status") == "COMPLETED", "API response status=COMPLETED")
 
 
@@ -967,13 +999,213 @@ vcur.close()
 print(f"  Cleaned up {RETRY_VIDEO_ID}")
 
 
+# ══════════════════════════════════════════════════════════════════
+# DELETE VIDEO FLOW — 404/409 guards, gateway cache flush, cascade purge
+# ══════════════════════════════════════════════════════════════════
+
+DELETE_ACTIVE_ID = "delete-active-e2e-video"
+
+
+# ── Step 25a: DELETE nonexistent → expect 404 ──────────────────────
+print("\n[25a] DELETE /api/video/nonexistent → expect 404")
+sign_headers = _proxy_sign("DELETE", "/api/video/nonexistent")
+r = requests.delete(
+    f"{VIDEO_SERVICE}/api/video/nonexistent",
+    headers={**sign_headers, "Cookie": session_cookie, "Content-Type": "application/json"},
+)
+_assert(r.status_code == 404, f"status=404 (got {r.status_code})")
+
+
+# ── Step 25b: DELETE active-status video → expect 409 ──────────────
+print("\n[25b] Seed video status=PROCESSING → DELETE → expect 409 + row survives")
+vcur = conn.cursor()
+vcur.execute("DELETE FROM videos WHERE id = %s", (DELETE_ACTIVE_ID,))
+conn.commit()
+vcur.execute(
+    "INSERT INTO videos (id, filename, status, num_of_retries, user_id, created_at) "
+    "VALUES (%s, %s, %s, %s, %s, NOW()) ON CONFLICT (id) DO NOTHING",
+    (DELETE_ACTIVE_ID, "active.mp4", "PROCESSING", 0, user_id),
+)
+conn.commit()
+vcur.close()
+
+sign_headers = _proxy_sign("DELETE", f"/api/video/{DELETE_ACTIVE_ID}")
+r = requests.delete(
+    f"{VIDEO_SERVICE}/api/video/{DELETE_ACTIVE_ID}",
+    headers={**sign_headers, "Cookie": session_cookie, "Content-Type": "application/json"},
+)
+_assert(r.status_code == 409, f"status=409 for active status (got {r.status_code})")
+
+vcur = conn.cursor()
+vcur.execute("SELECT status FROM videos WHERE id = %s", (DELETE_ACTIVE_ID,))
+row = vcur.fetchone()
+vcur.close()
+_assert(row is not None and row[0] == "PROCESSING", "active video row survives rejected delete")
+
+vcur = conn.cursor()
+vcur.execute("DELETE FROM videos WHERE id = %s", (DELETE_ACTIVE_ID,))
+conn.commit()
+vcur.close()
+print(f"  Cleaned up {DELETE_ACTIVE_ID}")
+
+
+# ── Step 25c: Warm gateway response cache (GET via gateway) ────────
+print("\n[25c] GET /api/video/{id} via gateway → expect 200 (warms cache)")
+# The pipeline takes minutes — refresh the access token defensively first
+r = requests.post(
+    f"{API_GATEWAY}/api/auth/refresh-token",
+    cookies={"refresh": new_cookies["refresh"]},
+)
+_assert(r.status_code == 200, f"refresh token for delete flow (got {r.status_code})")
+access_token = r.json()["accessToken"]
+
+auth_headers = {
+    "Authorization": f"Bearer {access_token}",
+    "Cookie": session_cookie,
+    "Content-Type": "application/json",
+}
+r = requests.get(f"{API_GATEWAY}/api/video/{video_id}", headers=auth_headers)
+_assert(r.status_code == 200, f"warming GET status=200 (got {r.status_code})")
+_assert(r.json().get("status") == "COMPLETED", "gateway GET returns COMPLETED")
+time.sleep(1)  # let the res.end capture store the cache entry
+
+r = requests.get(f"{API_GATEWAY}/api/video/{video_id}", headers=auth_headers)
+_assert(r.status_code == 200, f"second GET status=200 (got {r.status_code})")
+
+
+# ── Step 25d: DELETE via gateway → expect 200 (flushes the cache) ──
+print("\n[25d] DELETE /api/video/{id} via gateway → expect 200 + {deleted: true}")
+r = requests.delete(f"{API_GATEWAY}/api/video/{video_id}", headers=auth_headers)
+_assert(r.status_code == 200, f"DELETE status=200 (got {r.status_code})")
+_assert(r.json().get("deleted") is True, "response body {deleted: true}")
+time.sleep(1)  # flush happens before the request is proxied
+
+
+# ── Step 25e: GET via gateway → expect 404 (stale cache was flushed) ─
+print("\n[25e] GET /api/video/{id} via gateway → expect 404 (cached 200 must be gone)")
+r = requests.get(f"{API_GATEWAY}/api/video/{video_id}", headers=auth_headers)
+_assert(
+    r.status_code == 404,
+    f"post-delete GET=404 proves cache flush (got {r.status_code})",
+)
+
+# Direct (unsigned-cache) confirmation: the row itself is gone
+vcur = conn.cursor()
+vcur.execute("SELECT status FROM videos WHERE id = %s", (video_id,))
+row = vcur.fetchone()
+vcur.close()
+_assert(row is None, "videos row deleted")
+
+
+# ── Step 25f: video.deleted outbox event published ─────────────────
+print("\n[25f] Poll outbox (video-db) → expect video.deleted published (60s)")
+deleted_outbox_published = False
+for _ in range(60):
+    vcur = conn.cursor()
+    vcur.execute(
+        "SELECT id, status FROM outbox WHERE topic = 'video.deleted' "
+        "AND payload->>'video_id' = %s ORDER BY timestamp DESC LIMIT 1",
+        (video_id,),
+    )
+    row = vcur.fetchone()
+    vcur.close()
+    if row:
+        deleted_outbox_published = True
+        print(f"  Found outbox id={row[0]}, status={row[1]}")
+        break
+    time.sleep(1)
+_assert(deleted_outbox_published, "video.deleted outbox event published")
+
+
+# ── Step 25g: manifest rows + MPD object purged ────────────────────
+print("\n[25g] Poll manifest-db + MinIO → expect manifest_tasks gone + MPD removed (90s)")
+manifest_conn2 = psycopg2.connect(MANIFEST_DB_DSN)
+manifest_conn2.autocommit = True
+man_cur2 = manifest_conn2.cursor()
+
+manifests_gone = False
+for _ in range(90):
+    man_cur2.execute("SELECT COUNT(*) FROM manifest_tasks WHERE video_id = %s", (video_id,))
+    n = man_cur2.fetchone()[0]
+    if n == 0:
+        manifests_gone = True
+        break
+    time.sleep(1)
+_assert(manifests_gone, "manifest_tasks rows purged for deleted video")
+
+mpd_gone = False
+for _ in range(60):
+    try:
+        mc.stat_object(mpd_bucket, mpd_key)
+    except Exception:
+        mpd_gone = True
+        print(f"  MPD object {mpd_bucket}/{mpd_key} removed")
+        break
+    time.sleep(1)
+_assert(mpd_gone, "MPD object removed from manifest bucket")
+
+man_cur2.close()
+manifest_conn2.close()
+
+
+# ── Step 25h: media rows + segment/thumbnail objects purged ────────
+print("\n[25h] Poll media-db + MinIO → expect job rows + objects purged (90s)")
+media_rows_gone = False
+for _ in range(90):
+    mcur = media_conn.cursor()
+    mcur.execute("SELECT COUNT(*) FROM jobs WHERE video_id = %s", (video_id,))
+    jobs_n = mcur.fetchone()[0]
+    mcur.execute(
+        "SELECT COUNT(*) FROM transcode_tasks WHERE job_id = %s", (job_id,)
+    )
+    tc_n = mcur.fetchone()[0]
+    if transcode_ids:
+        placeholders = ",".join(["%s"] * len(transcode_ids))
+        mcur.execute(
+            f"SELECT COUNT(*) FROM upload_tasks WHERE transcode_id IN ({placeholders})",
+            transcode_ids,
+        )
+        ut_n = mcur.fetchone()[0]
+    else:
+        ut_n = 0
+    mcur.close()
+    if jobs_n == 0 and tc_n == 0 and ut_n == 0:
+        media_rows_gone = True
+        break
+    time.sleep(1)
+_assert(media_rows_gone, "jobs/transcode_tasks/upload_tasks rows purged (CASCADE)")
+
+segs_gone = False
+for _ in range(60):
+    objs = list(mc.list_objects(SEGMENT_BUCKET, prefix=f"{video_id}/", recursive=True))
+    if not objs:
+        segs_gone = True
+        print(f"  All segments removed from {SEGMENT_BUCKET}/{video_id}/")
+        break
+    time.sleep(1)
+_assert(segs_gone, f"segment objects removed from {SEGMENT_BUCKET}")
+
+thumb_parts = stored_thumbnail_url.split("/", 3)
+thumb_bucket, thumb_key = thumb_parts[3].split("/", 1)
+thumb_gone = False
+for _ in range(60):
+    try:
+        mc.stat_object(thumb_bucket, thumb_key)
+    except Exception:
+        thumb_gone = True
+        print(f"  Thumbnail object {thumb_bucket}/{thumb_key} removed")
+        break
+    time.sleep(1)
+_assert(thumb_gone, "thumbnail object removed from vidthumbnails bucket")
+
+
 # ── Cleanup DB connections ──────────────────────────────────────────
 media_conn.close()
 conn.close()
 
 
-# ── Step 25: Logout ───────────────────────────────────────────────
-print("\n[25] POST /api/auth/logout → expect 200")
+# ── Step 26: Logout ────────────────────────────────────────────────
+print("\n[26] POST /api/auth/logout → expect 200")
 r = requests.post(
     f"{API_GATEWAY}/api/auth/logout",
     headers={"Authorization": f"Bearer {access_token}"},

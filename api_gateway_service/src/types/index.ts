@@ -39,6 +39,7 @@ export interface RouteConfig {
  * @property rateLimit - Global rate limit defaults (window + max)
  * @property routes - Array of upstream route configurations
  * @property redis - Redis connection parameters (sessions + rate limit counters)
+ * @property cache - Response cache settings (route prefixes + TTL)
  * @property proxySecret - Shared HMAC secret for signing proxy requests
  */
 export interface GatewayConfig {
@@ -64,6 +65,12 @@ export interface GatewayConfig {
     port: number;
     password?: string;
     db: number;
+  };
+  cache: {
+    /** Route prefixes whose GET responses are cached (JSON responses only). */
+    routes: string[];
+    /** Cache TTL in seconds. */
+    ttlSeconds: number;
   };
   proxySecret: string;
 }

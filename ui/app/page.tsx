@@ -15,8 +15,8 @@ import {
   UploadCloud,
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
 import { Logo } from "@/components/brand/logo";
+import { DemoTour } from "@/components/demo/demo-tour";
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion/animations";
 
 const features = [
@@ -68,8 +68,6 @@ const pipeline = [
 ];
 
 export default function LandingPage() {
-  const [demoPlaying, setDemoPlaying] = useState(false);
-
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <header className="sticky top-0 z-40 border-b border-zinc-900/80 bg-zinc-950/70 backdrop-blur-xl">
@@ -89,7 +87,7 @@ export default function LandingPage() {
             </Link>
             <Link
               href="/register"
-              className="inline-flex h-9 items-center rounded-lg bg-brand-500 px-4 text-sm font-medium text-white shadow-[0_0_24px_-6px_rgba(239,25,42,0.6)] transition hover:bg-brand-600"
+              className="inline-flex h-9 items-center rounded-lg bg-brand-500 px-4 text-sm font-medium text-white shadow-[0_0_24px_-6px_rgba(51,88,255,0.6)] transition hover:bg-brand-600"
             >
               Get started
             </Link>
@@ -104,14 +102,14 @@ export default function LandingPage() {
             <motion.div
               initial={{ opacity: 0, y: 28 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
               className="mx-auto max-w-3xl text-center"
             >
               <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-brand-500/30 bg-brand-500/10 px-3 py-1 text-xs font-medium text-brand-300">
                 <Sparkles className="h-3.5 w-3.5" />
                 Video infrastructure for modern teams
               </span>
-              <h1 className="font-display text-4xl font-bold leading-[1.08] tracking-tight text-white sm:text-6xl">
+              <h1 className="font-display text-4xl font-bold leading-[1.1] tracking-tight text-white sm:text-[56px] sm:leading-[60px]">
                 Ship video like{" "}
                 <span className="bg-gradient-to-r from-brand-400 via-brand-500 to-brand-600 bg-clip-text text-transparent">
                   product
@@ -125,7 +123,7 @@ export default function LandingPage() {
               <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
                 <Link
                   href="/register"
-                  className="group inline-flex h-12 items-center gap-2 rounded-xl bg-brand-500 px-7 text-base font-semibold text-white shadow-[0_0_40px_-8px_rgba(239,25,42,0.7)] transition hover:bg-brand-600"
+                  className="group inline-flex h-12 items-center gap-2 rounded-xl bg-brand-500 px-7 text-base font-semibold text-white shadow-[0_0_40px_-8px_rgba(51,88,255,0.7)] transition hover:bg-brand-600"
                 >
                   Start uploading
                   <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
@@ -143,10 +141,10 @@ export default function LandingPage() {
             <motion.div
               initial={{ opacity: 0, y: 40 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.8, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
+              transition={{ duration: 0.25, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
               className="mt-16 mx-auto max-w-4xl"
             >
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-3 shadow-2xl shadow-black/50">
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 shadow-2xl shadow-black/50">
                 <div className="flex items-center gap-1.5 px-2 pb-3">
                   <span className="h-2.5 w-2.5 rounded-full bg-red-500/80" />
                   <span className="h-2.5 w-2.5 rounded-full bg-amber-500/80" />
@@ -159,8 +157,8 @@ export default function LandingPage() {
                       key={s}
                       initial={{ opacity: 0, x: -8 }}
                       animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: 0.45 + i * 0.12 }}
-                      className={`rounded-md px-2.5 py-1 font-mono text-[11px] ${
+                      transition={{ delay: 0.45 + i * 0.12, duration: 0.25 }}
+                      className={`rounded-lg px-2.5 py-1 font-mono text-[11px] ${
                         i === pipeline.length - 1
                           ? "bg-emerald-500/15 text-emerald-400"
                           : "bg-zinc-800 text-zinc-400"
@@ -180,10 +178,10 @@ export default function LandingPage() {
                       key={m.label}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
-                      transition={{ delay: 1 + i * 0.1 }}
+                      transition={{ delay: 1 + i * 0.1, duration: 0.25 }}
                       className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4"
                     >
-                      <p className="text-xs uppercase tracking-wider text-zinc-500">{m.label}</p>
+                      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-zinc-500">{m.label}</p>
                       <p className="mt-1 font-display text-lg font-semibold text-zinc-100">{m.value}</p>
                     </motion.div>
                   ))}
@@ -198,63 +196,19 @@ export default function LandingPage() {
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
             <FadeIn>
               <div className="mb-10 max-w-2xl">
-                <p className="text-sm font-semibold uppercase tracking-widest text-brand-400">Demo</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-brand-400">Demo</p>
                 <h2 className="mt-2 font-display text-3xl font-bold tracking-tight sm:text-4xl">
                   See MERIDIAN in motion
                 </h2>
                 <p className="mt-3 text-zinc-400">
-                  A walkthrough of the product surface — from authenticated upload through adaptive
-                  playback.
+                  Sign in, push a master file, watch pipeline status stream in live, then play
+                  adaptive DASH — the whole product path, scripted end to end.
                 </p>
               </div>
             </FadeIn>
 
             <FadeIn delay={0.1}>
-              <div className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-black shadow-2xl">
-                {!demoPlaying ? (
-                  <button
-                    type="button"
-                    onClick={() => setDemoPlaying(true)}
-                    className="group relative block aspect-video w-full"
-                    aria-label="Play product demo"
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src="/demo/meridian-demo.mp4"
-                      alt=""
-                      className="absolute inset-0 h-full w-full object-cover opacity-40"
-                      onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).style.display = "none";
-                      }}
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-zinc-950/20" />
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-4">
-                      <motion.span
-                        whileHover={{ scale: 1.05 }}
-                        className="flex h-20 w-20 items-center justify-center rounded-full bg-brand-500 text-white shadow-[0_0_60px_-10px_rgba(239,25,42,0.9)]"
-                      >
-                        <Play className="h-8 w-8 translate-x-0.5" fill="currentColor" />
-                      </motion.span>
-                      <p className="font-display text-lg font-semibold text-white">
-                        Product demo · 0:15
-                      </p>
-                      <p className="text-sm text-zinc-400">
-                        Upload → process → play adaptive DASH
-                      </p>
-                    </div>
-                  </button>
-                ) : (
-                  <video
-                    src="/demo/meridian-demo.mp4"
-                    controls
-                    autoPlay
-                    playsInline
-                    className="aspect-video w-full bg-black"
-                  >
-                    <track kind="captions" />
-                  </video>
-                )}
-              </div>
+              <DemoTour />
             </FadeIn>
           </div>
         </section>
@@ -264,7 +218,7 @@ export default function LandingPage() {
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
             <FadeIn>
               <div className="mb-14 max-w-2xl">
-                <p className="text-sm font-semibold uppercase tracking-widest text-brand-400">
+                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-brand-400">
                   Platform
                 </p>
                 <h2 className="mt-2 font-display text-3xl font-bold tracking-tight sm:text-4xl">
@@ -275,7 +229,7 @@ export default function LandingPage() {
             <Stagger className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
               {features.map((f) => (
                 <StaggerItem key={f.title}>
-                  <div className="group h-full rounded-2xl border border-zinc-800 bg-zinc-900/40 p-6 transition-all hover:border-brand-500/30 hover:bg-zinc-900/70">
+                  <div className="group h-full rounded-xl border border-zinc-800 bg-zinc-900/40 p-6 transition-all hover:border-brand-500/30 hover:bg-zinc-900/70">
                     <span className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-brand-500/10 text-brand-400 transition group-hover:bg-brand-500/20">
                       <f.icon className="h-5 w-5" />
                     </span>
@@ -293,7 +247,7 @@ export default function LandingPage() {
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
             <FadeIn>
               <div className="mb-14 max-w-2xl">
-                <p className="text-sm font-semibold uppercase tracking-widest text-brand-400">
+                <p className="text-xs font-semibold uppercase tracking-[0.08em] text-brand-400">
                   Flow
                 </p>
                 <h2 className="mt-2 font-display text-3xl font-bold tracking-tight sm:text-4xl">
@@ -304,7 +258,7 @@ export default function LandingPage() {
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
               {steps.map((s, i) => (
                 <FadeIn key={s.n} delay={i * 0.08}>
-                  <div className="relative h-full rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 p-6">
+                  <div className="relative h-full rounded-xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 p-6">
                     <span className="font-mono text-sm text-brand-500">{s.n}</span>
                     <h3 className="mt-3 font-display text-xl font-semibold">{s.title}</h3>
                     <p className="mt-2 text-sm text-zinc-400">{s.body}</p>
@@ -330,7 +284,7 @@ export default function LandingPage() {
               </p>
               <Link
                 href="/register"
-                className="mt-8 inline-flex h-12 items-center gap-2 rounded-xl bg-brand-500 px-8 text-base font-semibold text-white shadow-[0_0_40px_-8px_rgba(239,25,42,0.7)] transition hover:bg-brand-600"
+                className="mt-8 inline-flex h-12 items-center gap-2 rounded-xl bg-brand-500 px-8 text-base font-semibold text-white shadow-[0_0_40px_-8px_rgba(51,88,255,0.7)] transition hover:bg-brand-600"
               >
                 Create free account
                 <ArrowRight className="h-4 w-4" />

@@ -1,5 +1,5 @@
 import uuid
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 
 def build_object_url(event: dict) -> str | None:
@@ -14,6 +14,33 @@ def build_object_url(event: dict) -> str | None:
         bucket = record["s3"]["bucket"]["name"]
         key = unquote(record["s3"]["object"]["key"])
         return f"{endpoint}/{bucket}/{key}"
+    except (KeyError, IndexError):
+        return None
+
+
+def object_key_from_url(object_url: str, bucket: str) -> str | None:
+    """Extract the object key from a MinIO object URL ("{endpoint}/{bucket}/{key}").
+
+    Returns None when the URL does not point into ``bucket`` — callers must not
+    delete anything in that case.
+    """
+    if not isinstance(object_url, str):
+        return None
+    try:
+        segments = urlparse(object_url).path.lstrip("/").split("/", 1)
+        if len(segments) != 2 or segments[0] != bucket or not segments[1]:
+            return None
+        return segments[1]
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def object_key_from_event(event: dict) -> str | None:
+    """Extract the URL-decoded object key from a MinIO notification event."""
+    try:
+        record = event["Records"][0]
+        key = unquote(record["s3"]["object"]["key"])
+        return key or None
     except (KeyError, IndexError):
         return None
 

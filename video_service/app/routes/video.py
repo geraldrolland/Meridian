@@ -15,12 +15,14 @@ from app.middleware.check_proxy_signature import check_proxy_signature
 from app.middleware.get_user_session import get_user_session
 from app.minio_client import (
     abort_multipart_upload,
+    cleanup_video_obj,
     complete_multipart_upload,
     generate_part_urls,
     generate_upload_data,
     initiate_multipart_upload,
 )
 from app.models.session import SessionData
+from app.models.outbox import Outbox
 from app.models.video import (
     AbortUploadRequest,
     CompleteUploadRequest,
@@ -28,6 +30,7 @@ from app.models.video import (
     Video,
     VideoStatus,
 )
+from app.utils.notification_utils import object_key_from_url
 from app.websocket import ws_video_endpoint
 
 logger = logging.getLogger(__name__)
@@ -101,6 +104,88 @@ async def retry_video(
 
     logger.info("Video %s retried — status=QUEUED, published=false", video_id)
     return _video_response(video)
+
+
+# Statuses where Celery workers are actively processing this video —
+# deleting mid-flight could let a task re-create rows right after the
+# cleanup consumers removed them.
+ACTIVE_DELETE_BLOCKED_STATUSES = {
+    VideoStatus.QUEUED.value,
+    VideoStatus.PROCESSING.value,
+    VideoStatus.GENERATING_MANIFEST.value,
+}
+
+
+@router.delete("/{video_id}")
+async def delete_video(
+    video_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: SessionData | None = Depends(get_user_session),
+):
+    """Delete a video: emit a `video.deleted` outbox event and remove the row.
+
+    Both happen in one transaction — consumers (manifest_service,
+    media_processing_service) react to the event and clean up their
+    own stores. The original upload in `viduploads` is removed too when
+    `video_url` is known. Returns 409 while the video is actively processing.
+    """
+    video = await session.get(Video, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if user is None or video.user_id != user.userId:
+        raise HTTPException(status_code=403, detail="Not authorized to access this video")
+
+    if video.status in ACTIVE_DELETE_BLOCKED_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="Video is being processed — wait for it to finish before deleting",
+        )
+
+    # Captured before session.delete() — attributes are unreachable after commit.
+    stored_video_url: str | None = video.video_url
+
+    # Release any in-progress multipart upload (best effort).
+    if video.multipart_upload_id:
+        try:
+            abort_multipart_upload(video_id, video.storage_filename, video.multipart_upload_id)
+        except Exception:
+            logger.warning("Could not abort multipart upload for video %s", video_id, exc_info=True)
+        video.multipart_upload_id = None
+
+    outbox = Outbox(
+        topic="video.deleted",
+        payload={"video_id": video_id},
+        video_id=video_id,
+    )
+    session.add(outbox)
+    await session.delete(video)
+    await session.commit()
+
+    # The row is gone — now drop the original upload from viduploads so the
+    # bucket does not keep orphaned source videos (best effort).
+    if stored_video_url:
+        object_key = object_key_from_url(stored_video_url, settings.minio_bucket)
+        if object_key is None:
+            logger.warning(
+                "video_url for video %s does not point at bucket %s — skipping object delete",
+                video_id,
+                settings.minio_bucket,
+            )
+        else:
+            try:
+                cleanup_video_obj(object_key, settings.minio_bucket)
+            except Exception:
+                logger.warning(
+                    "Could not delete source object %s/%s for video %s",
+                    settings.minio_bucket,
+                    object_key,
+                    video_id,
+                    exc_info=True,
+                )
+
+    logger.info("Video %s deleted — video.deleted event queued", video_id)
+    return {"id": video_id, "deleted": True}
 
 
 @router.post("/upload", status_code=201)

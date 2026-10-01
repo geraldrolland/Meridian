@@ -118,3 +118,30 @@ def abort_multipart_upload(video_id: str, filename: str, upload_id: str) -> None
     object_key = f"videos/{video_id}/{filename}"
     client._abort_multipart_upload(settings.minio_bucket, object_key, upload_id)
     logger.info("Aborted multipart upload for %s — upload_id=%s", object_key, upload_id)
+
+
+def cleanup_video_obj(object_key: str, video_bucket: str) -> bool:
+    """Delete a stored source video from MinIO.
+
+    Args:
+        object_key: Key of the uploaded video inside the bucket
+            (e.g. "videos/{video_id}/{filename}").
+        video_bucket: Bucket that holds source videos (``viduploads``).
+
+    Returns:
+        True when the object was removed, False when it was already absent.
+
+    Raises:
+        Exception: Any error other than the object not existing.
+    """
+    try:
+        client.remove_object(video_bucket, object_key)
+    except Exception as exc:
+        # S3Error carries .code; tolerate only "object absent" (checked by
+        # attribute, not type, so tests that mock the minio package still work).
+        if getattr(exc, "code", None) in ("NoSuchKey", "NoSuchObject"):
+            logger.debug("Source video %s/%s already absent", video_bucket, object_key)
+            return False
+        raise
+    logger.info("Deleted source video %s/%s", video_bucket, object_key)
+    return True

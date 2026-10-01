@@ -21,6 +21,8 @@ services:
       - CORS_ORIGIN=http://localhost:3000,http://127.0.0.1:3000
       - CORS_CREDENTIALS=true
       - ROUTES=[{"prefix":"/api/auth","target":"http://auth-service:4000"},{"prefix":"/api/video","target":"http://video-service:8000"}]
+      - CACHE_ROUTES=["/api/video"]
+      - CACHE_TTL=420
     depends_on:
       redis:
         condition: service_healthy
@@ -129,10 +131,10 @@ services:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
-      interval: 5s
-      timeout: 5s
+      interval: 10s
+      timeout: 30s
       retries: 10
-      start_period: 30s
+      start_period: 60s
     networks:
       - meridian
     restart: unless-stopped
@@ -153,6 +155,8 @@ services:
       echo 'Topic video.queued created with 8 partitions' &&
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic video.processing --partitions 4 --replication-factor 1 &&
       echo 'Topic video.processing created with 4 partitions' &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic job.processing --partitions 4 --replication-factor 1 &&
+      echo 'Topic job.processing created with 4 partitions' &&
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic job.completed --partitions 4 --replication-factor 1 &&
       echo 'Topic job.completed created with 4 partitions' &&
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic job.failed --partitions 4 --replication-factor 1 &&
@@ -162,7 +166,9 @@ services:
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic manifest.generating --partitions 4 --replication-factor 1 &&
       echo 'Topic manifest.generating created with 4 partitions' &&
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic manifest.completed --partitions 4 --replication-factor 1 &&
-      echo 'Topic manifest.completed created with 4 partitions'
+      echo 'Topic manifest.completed created with 4 partitions' &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic video.deleted --partitions 4 --replication-factor 1 &&
+      echo 'Topic video.deleted created with 4 partitions'
       "
 
   minio:
@@ -175,6 +181,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost:3000,http://127.0.0.1:3000"
       MINIO_NOTIFY_KAFKA_ENABLE_1: "on"
       MINIO_NOTIFY_KAFKA_BROKERS_1: "kafka:29092"
       MINIO_NOTIFY_KAFKA_TOPIC_1: "bucketnotifications"
@@ -304,11 +311,11 @@ services:
       - REDIS_PORT=6379
     command: celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo -Q video
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=15"]
       interval: 30s
-      timeout: 10s
+      timeout: 45s
       retries: 3
-      start_period: 30s
+      start_period: 60s
     depends_on:
       video-db:
         condition: service_healthy
@@ -419,11 +426,11 @@ services:
       - LOG_LEVEL=info
     command: celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo -Q media_processing
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=15"]
       interval: 30s
-      timeout: 10s
+      timeout: 45s
       retries: 3
-      start_period: 30s
+      start_period: 60s
     depends_on:
       media-processing-db:
         condition: service_healthy
@@ -542,11 +549,11 @@ services:
       - MINIO_SECURE=false
     command: celery -A app.celery_app:celery_app worker --loglevel=info --pool=solo -Q manifest
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=5"]
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "--timeout=15"]
       interval: 30s
-      timeout: 10s
+      timeout: 45s
       retries: 3
-      start_period: 30s
+      start_period: 60s
     depends_on:
       manifest-db:
         condition: service_healthy
@@ -588,6 +595,31 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+    networks:
+      - meridian
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_BASE=http://localhost:3001
+        - NEXT_PUBLIC_MINIO_HOST=http://localhost:9000
+    container_name: meridian-ui
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_TELEMETRY_DISABLED=1
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - meridian
     restart: unless-stopped

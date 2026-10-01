@@ -5,7 +5,7 @@ import os
 import subprocess
 
 from app.config import settings
-from app.utils import get_video_framerate
+from app.utils import get_video_framerate, has_audio_stream
 
 logger = logging.getLogger(__name__)
 
@@ -88,12 +88,14 @@ class GenerateInit:
             init_paths.append(out_path)
             logger.info("Generated init segment → %s", out_path)
 
-        # Generate audio init segment
-        audio_dir = os.path.join(self.output_dir, "audio")
-        os.makedirs(audio_dir, exist_ok=True)
-        audio_path = os.path.join(audio_dir, "init.mp4")
-        self.__generate_audio_init(audio_path)
-        init_paths.append(audio_path)
-        logger.info("Generated audio init segment → %s", audio_path)
+        if has_audio_stream(self.input_file):
+            audio_dir = os.path.join(self.output_dir, "audio")
+            os.makedirs(audio_dir, exist_ok=True)
+            audio_path = os.path.join(audio_dir, "init.mp4")
+            self.__generate_audio_init(audio_path)
+            init_paths.append(audio_path)
+            logger.info("Generated audio init segment → %s", audio_path)
+        else:
+            logger.info("No audio stream in %s; skipping audio init segment", self.input_file)
 
         return init_paths

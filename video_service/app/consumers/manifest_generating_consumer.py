@@ -29,6 +29,7 @@ async def consume_manifest_generating_messages(consumer: AIOKafkaConsumer) -> No
 
                 event_dict: dict[str, Any] = json.loads(raw_value.decode("utf-8"))
                 video_id = event_dict.get("video_id")
+                thumbnail_url = event_dict.get("thumbnail_url")
 
                 if not video_id:
                     logger.warning("[manifest-generating] Missing video_id in event, skipping")
@@ -48,6 +49,8 @@ async def consume_manifest_generating_messages(consumer: AIOKafkaConsumer) -> No
                         )
                     else:
                         video.status = VideoStatus.GENERATING_MANIFEST.value
+                        if thumbnail_url:
+                            video.thumbnail_url = thumbnail_url
                         await session.commit()
                         logger.info(
                             "[manifest-generating] Video %s status set to GENERATING_MANIFEST",
@@ -59,6 +62,7 @@ async def consume_manifest_generating_messages(consumer: AIOKafkaConsumer) -> No
                                 video_id=video_id,
                                 status=VideoStatus.GENERATING_MANIFEST.value,
                                 user_id=video.user_id,
+                                thumbnail_url=video.thumbnail_url,
                             )
 
                 await consumer.commit(

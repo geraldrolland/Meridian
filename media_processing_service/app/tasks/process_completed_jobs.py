@@ -16,7 +16,13 @@ from app.models.outbox import Outbox
 from app.models.transcode_task import TranscodeTask
 from app.models.upload_task import UploadTask, UploadStatus
 from app.config import settings
-from app.utils import resolve_object_key, build_object_url, get_video_duration, get_video_framerate
+from app.utils import (
+    build_object_url,
+    get_video_duration,
+    get_video_framerate,
+    has_audio_stream,
+    resolve_object_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +120,7 @@ def process_completed_jobs():
                         "manifest_type": "static",
                         "video_duration": get_video_duration(video_file_path),
                         "framerate": get_video_framerate(video_file_path),
+                        "has_audio": has_audio_stream(video_file_path),
                         "segment_duration": settings.segment_duration,
                         "renditions": settings.renditions,
                         "media_prefix": f"{settings.minio_segment_bucket}/{job.video_id}/",

@@ -21,6 +21,7 @@ def _mock_heavy_deps():
     ]
     mock_config.settings.multipart_threshold = 100 * 1024 * 1024
     mock_config.settings.default_part_size = 5 * 1024 * 1024
+    mock_config.settings.minio_bucket = "viduploads"
 
     mock_minio = MagicMock()
 
@@ -58,6 +59,8 @@ def _make_video(
     user_id=1,
     manifest_url=None,
     thumbnail_url=None,
+    multipart_upload_id=None,
+    video_url=None,
 ):
     v = MagicMock()
     v.id = video_id
@@ -68,6 +71,9 @@ def _make_video(
     v.user_id = user_id
     v.manifest_url = manifest_url
     v.thumbnail_url = thumbnail_url
+    v.storage_filename = "abcdef12.mp4"
+    v.multipart_upload_id = multipart_upload_id
+    v.video_url = video_url
     v.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
     return v
 
@@ -258,3 +264,239 @@ class TestRetryVideo:
 
         assert exc_info.value.status_code == 403
         assert "Not authorized" in exc_info.value.detail
+
+
+class TestDeleteVideo:
+    @pytest.mark.asyncio
+    async def test_deletes_video_and_queues_video_deleted_event(self, _mock_heavy_deps):
+        from app.models.outbox import Outbox
+        from app.routes.video import delete_video
+
+        video = _make_video(status=VideoStatus.COMPLETED.value, user_id=1)
+        session = _make_mock_session(video=video)
+        session.add = MagicMock()
+        user = _make_user(user_id=1)
+
+        result = await delete_video(video_id="vid-123", session=session, user=user)
+
+        assert result == {"id": "vid-123", "deleted": True}
+        session.add.assert_called_once()
+        outbox = session.add.call_args[0][0]
+        assert isinstance(outbox, Outbox)
+        assert outbox.topic == "video.deleted"
+        assert outbox.payload == {"video_id": "vid-123"}
+        assert outbox.video_id == "vid-123"
+        session.delete.assert_awaited_once_with(video)
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_404_when_not_found(self, _mock_heavy_deps):
+        from app.routes.video import delete_video
+        from fastapi import HTTPException
+
+        session = _make_mock_session(video=None)
+        user = _make_user(user_id=1)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_video(video_id="nonexistent", session=session, user=user)
+
+        assert exc_info.value.status_code == 404
+        session.delete.assert_not_called()
+        session.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_403_when_no_session(self, _mock_heavy_deps):
+        from app.routes.video import delete_video
+        from fastapi import HTTPException
+
+        video = _make_video(user_id=1)
+        session = _make_mock_session(video=video)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_video(video_id="vid-123", session=session, user=None)
+
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_returns_403_when_user_id_mismatch(self, _mock_heavy_deps):
+        from app.routes.video import delete_video
+        from fastapi import HTTPException
+
+        video = _make_video(user_id=1)
+        session = _make_mock_session(video=video)
+        user = _make_user(user_id=99)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_video(video_id="vid-123", session=session, user=user)
+
+        assert exc_info.value.status_code == 403
+        session.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [
+            VideoStatus.QUEUED.value,
+            VideoStatus.PROCESSING.value,
+            VideoStatus.GENERATING_MANIFEST.value,
+        ],
+    )
+    async def test_returns_409_while_actively_processing(
+        self, _mock_heavy_deps, status
+    ):
+        from app.routes.video import delete_video
+        from fastapi import HTTPException
+
+        video = _make_video(status=status, user_id=1)
+        session = _make_mock_session(video=video)
+        user = _make_user(user_id=1)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_video(video_id="vid-123", session=session, user=user)
+
+        assert exc_info.value.status_code == 409
+        assert "being processed" in exc_info.value.detail
+        session.delete.assert_not_called()
+        session.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [
+            VideoStatus.AWAITING_UPLOAD.value,
+            VideoStatus.COMPLETED.value,
+            VideoStatus.FAILED.value,
+            VideoStatus.RETRY.value,
+        ],
+    )
+    async def test_allows_delete_for_non_active_statuses(
+        self, _mock_heavy_deps, status
+    ):
+        from app.routes.video import delete_video
+
+        video = _make_video(status=status, user_id=1)
+        session = _make_mock_session(video=video)
+        session.add = MagicMock()
+        user = _make_user(user_id=1)
+
+        result = await delete_video(video_id="vid-123", session=session, user=user)
+
+        assert result["deleted"] is True
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_aborts_in_progress_multipart_upload(self, _mock_heavy_deps):
+        from app.routes.video import delete_video
+
+        video = _make_video(
+            status=VideoStatus.AWAITING_UPLOAD.value,
+            user_id=1,
+            multipart_upload_id="upload-xyz",
+        )
+        session = _make_mock_session(video=video)
+        session.add = MagicMock()
+        user = _make_user(user_id=1)
+
+        with patch("app.routes.video.abort_multipart_upload") as mock_abort:
+            await delete_video(video_id="vid-123", session=session, user=user)
+
+        mock_abort.assert_called_once_with("vid-123", "abcdef12.mp4", "upload-xyz")
+        assert video.multipart_upload_id is None
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_survives_multipart_abort_failure(self, _mock_heavy_deps):
+        from app.routes.video import delete_video
+
+        video = _make_video(
+            status=VideoStatus.AWAITING_UPLOAD.value,
+            user_id=1,
+            multipart_upload_id="upload-xyz",
+        )
+        session = _make_mock_session(video=video)
+        session.add = MagicMock()
+        user = _make_user(user_id=1)
+
+        with patch(
+            "app.routes.video.abort_multipart_upload",
+            side_effect=Exception("minio down"),
+        ):
+            result = await delete_video(video_id="vid-123", session=session, user=user)
+
+        assert result["deleted"] is True
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_deletes_source_object_from_viduploads(self, _mock_heavy_deps):
+        from app.routes.video import delete_video
+
+        video = _make_video(
+            status=VideoStatus.COMPLETED.value,
+            user_id=1,
+            video_url="http://minio:9000/viduploads/videos/vid-123/test.mp4",
+        )
+        session = _make_mock_session(video=video)
+        session.add = MagicMock()
+        user = _make_user(user_id=1)
+
+        with patch("app.routes.video.cleanup_video_obj") as mock_cleanup:
+            result = await delete_video(video_id="vid-123", session=session, user=user)
+
+        assert result["deleted"] is True
+        mock_cleanup.assert_called_once_with("videos/vid-123/test.mp4", "viduploads")
+
+    @pytest.mark.asyncio
+    async def test_skips_object_delete_when_video_url_missing(self, _mock_heavy_deps):
+        from app.routes.video import delete_video
+
+        video = _make_video(status=VideoStatus.COMPLETED.value, user_id=1, video_url=None)
+        session = _make_mock_session(video=video)
+        session.add = MagicMock()
+        user = _make_user(user_id=1)
+
+        with patch("app.routes.video.cleanup_video_obj") as mock_cleanup:
+            result = await delete_video(video_id="vid-123", session=session, user=user)
+
+        assert result["deleted"] is True
+        mock_cleanup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_object_delete_when_url_points_to_other_bucket(self, _mock_heavy_deps):
+        from app.routes.video import delete_video
+
+        video = _make_video(
+            status=VideoStatus.COMPLETED.value,
+            user_id=1,
+            video_url="http://minio:9000/manifest/videos/vid-123/test.mp4",
+        )
+        session = _make_mock_session(video=video)
+        session.add = MagicMock()
+        user = _make_user(user_id=1)
+
+        with patch("app.routes.video.cleanup_video_obj") as mock_cleanup:
+            result = await delete_video(video_id="vid-123", session=session, user=user)
+
+        assert result["deleted"] is True
+        mock_cleanup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_survives_source_object_cleanup_failure(self, _mock_heavy_deps):
+        from app.routes.video import delete_video
+
+        video = _make_video(
+            status=VideoStatus.COMPLETED.value,
+            user_id=1,
+            video_url="http://minio:9000/viduploads/videos/vid-123/test.mp4",
+        )
+        session = _make_mock_session(video=video)
+        session.add = MagicMock()
+        user = _make_user(user_id=1)
+
+        with patch(
+            "app.routes.video.cleanup_video_obj",
+            side_effect=Exception("minio down"),
+        ):
+            result = await delete_video(video_id="vid-123", session=session, user=user)
+
+        assert result["deleted"] is True
+        session.commit.assert_awaited_once()

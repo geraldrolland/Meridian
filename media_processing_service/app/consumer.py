@@ -1,7 +1,10 @@
 """Kafka consumer for the media processing service.
 
-Subscribes to the video.queued topic and persists Job records using
-a dual Redis lock mechanism (PROCESSING + COMMITTING).
+Subscribes to the video.queued topic and persists Job records together
+with a `job.processing` outbox event.
+
+Also subscribes to video.deleted: fetches every job for the video and
+runs `cleanup_jobs` (segment/thumbnail objects, temp files, job rows).
 """
 
 import asyncio
@@ -13,10 +16,11 @@ from aiokafka import AIOKafkaConsumer, TopicPartition, ConsumerRebalanceListener
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
-from app.db_config import async_session_factory
-from app.lock import LockState, acquire_lock, release_lock
+from app.db_config import async_session_factory, get_sync_session
+from app.media_service.cleanup import cleanup_jobs
 from app.models.event import VideoQueuedEvent
 from app.models.job import Job
+from app.models.outbox import Outbox
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +35,28 @@ class AppRebalanceListener(ConsumerRebalanceListener):
         logger.info("Partitions assigned: %s", assigned)
 
 
+def _handle_video_deleted(video_id: str) -> None:
+    """Delete every job (and its artifacts) for a deleted video.
+
+    Runs in a worker thread — MinIO deletes and the sync session block.
+    `cleanup_jobs` commits once after all job rows are removed; the
+    transcode/upload task FKs cascade with each job.
+    """
+    session = get_sync_session()
+    try:
+        jobs = session.query(Job).filter(Job.video_id == video_id).all()
+        if jobs:
+            cleanup_jobs(jobs, session)
+        else:
+            logger.info("No jobs to clean up for deleted video %s", video_id)
+    finally:
+        session.close()
+
+
 async def consume_messages(consumer: AIOKafkaConsumer) -> None:
     """Main consumer loop. Runs until cancelled."""
     try:
         async for msg in consumer:
-            processing_lock = None
-            committing_lock = None
             try:
                 raw_value: bytes = msg.value
                 if raw_value is None:
@@ -47,16 +67,34 @@ async def consume_messages(consumer: AIOKafkaConsumer) -> None:
                     continue
 
                 event_dict: dict[str, Any] = json.loads(raw_value.decode("utf-8"))
-                event = VideoQueuedEvent.model_validate(event_dict)
 
-                # 1. Acquire PROCESSING lock
-                processing_lock = acquire_lock(LockState.PROCESSING, event.event_id)
-                if processing_lock is None:
-                    logger.warning(
-                        "Could not acquire PROCESSING lock for event_id=%s, skipping",
-                        event.event_id,
+                if msg.topic == settings.kafka_video_deleted_topic:
+                    deleted_video_id = event_dict.get("video_id")
+                    if not deleted_video_id:
+                        logger.warning(
+                            "video.deleted message without video_id, skipping"
+                        )
+                        await consumer.commit(
+                            {TopicPartition(msg.topic, msg.partition): msg.offset + 1}
+                        )
+                        continue
+                    try:
+                        await asyncio.to_thread(_handle_video_deleted, deleted_video_id)
+                        logger.info(
+                            "Cleaned up jobs for deleted video %s", deleted_video_id
+                        )
+                    except IntegrityError:
+                        logger.warning(
+                            "IntegrityError while cleaning jobs for video %s, skipping",
+                            deleted_video_id,
+                            exc_info=True,
+                        )
+                    await consumer.commit(
+                        {TopicPartition(msg.topic, msg.partition): msg.offset + 1}
                     )
                     continue
+
+                event = VideoQueuedEvent.model_validate(event_dict)
 
                 # 2. Create Job object in memory
                 job = Job(
@@ -65,17 +103,16 @@ async def consume_messages(consumer: AIOKafkaConsumer) -> None:
                     object_url=event.object_url,
                 )
 
-                # 3. Acquire COMMITTING lock
-                committing_lock = acquire_lock(LockState.COMMITTING, event.event_id)
-                if committing_lock is None:
-                    logger.warning(
-                        "Could not acquire COMMITTING lock for event_id=%s, skipping",
-                        event.event_id,
-                    )
-                    continue
+                outbox = Outbox(
+                    topic="job.processing",
+                    payload={
+                        "video_id": event.video_id
+                        }
+                )
 
                 # 4. Commit job to DB
                 async with async_session_factory() as session:
+                    session.add(outbox)
                     session.add(job)
                     await session.commit()
 
@@ -111,13 +148,7 @@ async def consume_messages(consumer: AIOKafkaConsumer) -> None:
             except Exception as e:
                 logger.error("Error processing message: %s", e, exc_info=True)
                 await asyncio.sleep(1)
-
-            finally:
-                if committing_lock is not None:
-                    release_lock(committing_lock)
-                if processing_lock is not None:
-                    release_lock(processing_lock)
-
+            
     except asyncio.CancelledError:
         logger.info("Consumer task cancelled")
     finally:
@@ -138,10 +169,13 @@ async def start_consumer() -> None:
     )
 
     await consumer.start()
-    consumer.subscribe([settings.kafka_topic], listener=AppRebalanceListener())
+    consumer.subscribe(
+        [settings.kafka_topic, settings.kafka_video_deleted_topic],
+        listener=AppRebalanceListener(),
+    )
     logger.info(
-        "Kafka consumer started — topic=%s group=%s",
-        settings.kafka_topic,
+        "Kafka consumer started — topics=%s group=%s",
+        [settings.kafka_topic, settings.kafka_video_deleted_topic],
         settings.kafka_consumer_group_id,
     )
 

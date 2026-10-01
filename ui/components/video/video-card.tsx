@@ -4,12 +4,22 @@ import { motion } from "framer-motion";
 import { Film, Play } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+import { DeleteVideoButton } from "@/components/video/delete-video-button";
 import { StatusChip } from "@/components/video/status-chip";
 import { rewriteStorageUrl } from "@/lib/minio-url";
 import type { Video } from "@/lib/types";
-import { formatDate } from "@/lib/utils";
+import { canDeleteVideo } from "@/lib/video/status";
+import { formatDateShort } from "@/lib/utils";
 
-export function VideoCard({ video, index = 0 }: { video: Video; index?: number }) {
+export function VideoCard({
+  video,
+  index = 0,
+  onDeleted,
+}: {
+  video: Video;
+  index?: number;
+  onDeleted?: (videoId: string) => void;
+}) {
   const thumb = rewriteStorageUrl(video.thumbnail_url);
   const canPlay = video.status === "COMPLETED" && video.manifest_url;
 
@@ -18,11 +28,12 @@ export function VideoCard({ video, index = 0 }: { video: Video; index?: number }
       layout
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, delay: Math.min(index * 0.05, 0.3) }}
+      transition={{ duration: 0.25, delay: Math.min(index * 0.05, 0.3) }}
+      className="relative"
     >
       <Link
         href={`/video/${video.id}`}
-        className="group block overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/60 transition-all hover:border-brand-500/40 hover:shadow-[0_0_40px_-12px_rgba(239,25,42,0.35)]"
+        className="group block overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/60 transition-all hover:border-brand-500/40 hover:shadow-[0_0_40px_-12px_rgba(51,88,255,0.35)]"
       >
         <div className="relative aspect-video overflow-hidden bg-zinc-950">
           {thumb ? (
@@ -52,11 +63,20 @@ export function VideoCard({ video, index = 0 }: { video: Video; index?: number }
         <div className="space-y-1 p-4">
           <p className="truncate font-medium text-zinc-100">{video.filename}</p>
           <p className="text-xs text-zinc-500">
-            {formatDate(video.created_at)}
-            {video.num_of_retries > 0 ? ` · ${video.num_of_retries} retries` : ""}
+            {formatDateShort(video.created_at)} · {video.num_of_retries} retries
           </p>
         </div>
       </Link>
+      {canDeleteVideo(video.status) && (
+        <div className="absolute right-3 top-3">
+          <DeleteVideoButton
+            videoId={video.id}
+            filename={video.filename}
+            iconOnly
+            onDeleted={() => onDeleted?.(video.id)}
+          />
+        </div>
+      )}
     </motion.div>
   );
 }

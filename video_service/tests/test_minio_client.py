@@ -75,3 +75,31 @@ class TestGenerateUploadData:
 
         mock_policy.add_equals_condition.assert_called_once_with("key", "videos/vid-123/test.mp4")
         mock_policy.add_starts_with_condition.assert_called_once_with("Content-Type", "video/")
+
+
+class TestCleanupVideoObj:
+    def test_removes_object_from_video_bucket(self, _mock_heavy_deps):
+        from app.minio_client import cleanup_video_obj, client
+
+        with patch.object(client, "remove_object") as mock_remove:
+            removed = cleanup_video_obj("videos/vid-123/test.mp4", "viduploads")
+
+        assert removed is True
+        mock_remove.assert_called_once_with("viduploads", "videos/vid-123/test.mp4")
+
+    def test_returns_false_when_object_already_absent(self, _mock_heavy_deps):
+        from app.minio_client import cleanup_video_obj, client
+
+        absent = Exception("NoSuchKey")
+        absent.code = "NoSuchKey"
+        with patch.object(client, "remove_object", side_effect=absent):
+            removed = cleanup_video_obj("videos/vid-123/test.mp4", "viduploads")
+
+        assert removed is False
+
+    def test_reraises_unexpected_minio_errors(self, _mock_heavy_deps):
+        from app.minio_client import cleanup_video_obj, client
+
+        with patch.object(client, "remove_object", side_effect=Exception("minio down")):
+            with pytest.raises(Exception, match="minio down"):
+                cleanup_video_obj("videos/vid-123/test.mp4", "viduploads")
