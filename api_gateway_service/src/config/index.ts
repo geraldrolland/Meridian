@@ -33,6 +33,26 @@ function parseCorsOrigins(): string[] {
 }
 
 /**
+ * Parses the `CACHE_ROUTES` environment variable into an array of route
+ * prefixes whose GET responses are cached. Expects a JSON string like
+ * `["/api/video"]` (defaults to that value when unset). Returns an empty
+ * array on parse failure with a console error.
+ *
+ * @returns Route prefixes eligible for response caching
+ */
+function parseCacheRoutes(): string[] {
+  const raw = process.env.CACHE_ROUTES || '["/api/video"]';
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('not an array');
+    return parsed.filter((route): route is string => typeof route === 'string');
+  } catch {
+    console.error('Failed to parse CACHE_ROUTES env variable. Using empty cache routes.');
+    return [];
+  }
+}
+
+/**
  * Centralized gateway configuration sourced from environment variables.
  * All values have sensible defaults for local development.
  */
@@ -59,6 +79,10 @@ const config: GatewayConfig = {
     port: parseInt(process.env.REDIS_PORT || '6379', 10),
     password: process.env.REDIS_PASSWORD || undefined,
     db: parseInt(process.env.REDIS_DB || '0', 10),
+  },
+  cache: {
+    routes: parseCacheRoutes(),
+    ttlSeconds: parseInt(process.env.CACHE_TTL || '420', 10) || 420,
   },
   proxySecret: process.env.PROXY_SECRET || 'change-me-in-production',
 };

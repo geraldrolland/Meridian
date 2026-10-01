@@ -28,6 +28,7 @@ class KafkaProducer:
             return
         self._producer = SyncKafkaProducer(
             bootstrap_servers=settings.kafka_bootstrap_servers,
+            api_version=(2, 6),
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
             acks="all",
         )
@@ -42,12 +43,16 @@ class KafkaProducer:
             logger.info("Kafka producer stopped")
 
     def publish(self, topic: str, payload: dict) -> None:
-        """Publish a message to Kafka synchronously. Raises NoBrokersAvailable if broker is offline."""
+        """Publish a message to Kafka synchronously.
+
+        Raises on produce failure so callers (outbox publisher) can retry.
+        """
         if self._producer is None:
             raise RuntimeError("Kafka producer not initialized")
         payload["event_id"] = uuid.uuid4().hex
         payload["timestamp"] = datetime.now(timezone.utc).isoformat()
-        self._producer.send(topic, payload)
+        future = self._producer.send(topic, payload)
+        future.get(timeout=settings.kafka_publish_timeout)
         self._producer.flush()
         logger.info("Published event to topic=%s", topic)
 

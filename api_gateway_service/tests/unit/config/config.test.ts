@@ -17,6 +17,8 @@ describe('Config', () => {
     delete process.env.REDIS_HOST;
     delete process.env.REDIS_PORT;
     delete process.env.PROXY_SECRET;
+    delete process.env.CACHE_ROUTES;
+    delete process.env.CACHE_TTL;
   });
 
   afterAll(() => {
@@ -80,5 +82,40 @@ describe('Config', () => {
     process.env.ROUTES = '[]';
     const { default: config } = require('../../../src/config');
     expect(config.auth.excludePaths).toEqual(['/health', '/api/login']);
+  });
+
+  it('should default cache routes to ["/api/video"] and TTL to 420s (7 minutes)', () => {
+    process.env.ROUTES = '[]';
+    const { default: config } = require('../../../src/config');
+    expect(config.cache.routes).toEqual(['/api/video']);
+    expect(config.cache.ttlSeconds).toBe(420);
+  });
+
+  it('should parse CACHE_ROUTES from JSON', () => {
+    process.env.ROUTES = '[]';
+    process.env.CACHE_ROUTES = JSON.stringify(['/api/video', '/api/auth']);
+    const { default: config } = require('../../../src/config');
+    expect(config.cache.routes).toEqual(['/api/video', '/api/auth']);
+  });
+
+  it('should return empty cache routes on invalid CACHE_ROUTES', () => {
+    process.env.ROUTES = '[]';
+    process.env.CACHE_ROUTES = 'not-json';
+    const { default: config } = require('../../../src/config');
+    expect(config.cache.routes).toEqual([]);
+  });
+
+  it('should parse CACHE_TTL from env', () => {
+    process.env.ROUTES = '[]';
+    process.env.CACHE_TTL = '60';
+    const { default: config } = require('../../../src/config');
+    expect(config.cache.ttlSeconds).toBe(60);
+  });
+
+  it('should fall back to 420 when CACHE_TTL is not a number', () => {
+    process.env.ROUTES = '[]';
+    process.env.CACHE_TTL = 'seven-minutes';
+    const { default: config } = require('../../../src/config');
+    expect(config.cache.ttlSeconds).toBe(420);
   });
 });

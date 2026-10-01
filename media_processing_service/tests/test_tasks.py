@@ -650,6 +650,7 @@ class TestProcessCompletedJobs:
     @patch("app.tasks.process_completed_jobs.os.path.exists", return_value=True)
     @patch("app.tasks.process_completed_jobs.get_video_framerate", return_value=30.0)
     @patch("app.tasks.process_completed_jobs.get_video_duration", return_value=120.5)
+    @patch("app.tasks.process_completed_jobs.has_audio_stream", return_value=False)
     @patch("app.tasks.process_completed_jobs.build_object_url", return_value="http://minio:9000/vidsegments/vid1/720p/seg_001.mp4")
     @patch("app.tasks.process_completed_jobs.resolve_object_key", return_value="vid1/720p/seg_001.mp4")
     @patch("app.tasks.process_completed_jobs.MediaCleanup")
@@ -659,7 +660,7 @@ class TestProcessCompletedJobs:
     def test_successful_publish(
         self, mock_get_session, mock_acquire, mock_release,
         mock_cleanup_cls, mock_resolve, mock_build_url, mock_get_duration,
-        mock_get_framerate, mock_exists,
+        mock_has_audio, mock_get_framerate, mock_exists,
     ):
         session = mock_get_session.return_value
         job = _make_job(status=JobStatus.COMPLETED, published=False)
@@ -707,6 +708,7 @@ class TestProcessCompletedJobs:
         assert added_outbox.payload["manifest_metadata"]["manifest_type"] == "static"
         assert added_outbox.payload["manifest_metadata"]["video_duration"] == 120.5
         assert added_outbox.payload["manifest_metadata"]["framerate"] == 30.0
+        assert added_outbox.payload["manifest_metadata"]["has_audio"] is False
         mock_get_duration.assert_called_once()
         mock_get_framerate.assert_called_once()
 

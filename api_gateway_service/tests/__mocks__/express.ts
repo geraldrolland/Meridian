@@ -23,12 +23,22 @@ export function createMockRes(): Response {
     cookie: jest.fn(),
     setHeader: jest.fn().mockImplementation((key: string, value: string | number) => {
       res.headers[key] = value;
+      res.headers[key.toLowerCase()] = value;
+    }),
+    getHeader: jest.fn().mockImplementation((key: string) => {
+      return res.headers[key] ?? res.headers[key.toLowerCase()];
     }),
     status: jest.fn().mockReturnThis(),
     json: jest.fn().mockImplementation((data: unknown) => {
       res.body = data;
       return res;
     }),
+    send: jest.fn().mockImplementation((data: unknown) => {
+      res.body = data;
+      return res;
+    }),
+    write: jest.fn().mockReturnValue(true),
+    writeHead: jest.fn().mockReturnThis(),
     end: jest.fn().mockReturnThis(),
     on: jest.fn(),
   };

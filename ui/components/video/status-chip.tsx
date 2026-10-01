@@ -18,7 +18,7 @@ export function StatusChip({ status, className }: { status: VideoStatus; classNa
   const meta = STATUS_META[status];
   return (
     <Badge variant={variantMap[meta.tone]} className={cn("gap-1.5", className)}>
-      {(status === "PROCESSING" || status === "GENERATING_MANIFEST" || status === "QUEUED" || status === "AWAITING_UPLOAD") && (
+      {(status === "PROCESSING" || status === "GENERATING_MANIFEST" || status === "AWAITING_UPLOAD") && (
         <span className="relative flex h-1.5 w-1.5">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-60" />
           <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />

@@ -8,9 +8,15 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.database import async_session_factory
+from app.minio_client import cleanup_video_obj
 from app.models.events import MinIOEvent
 from app.models.video import Video, VideoStatus
-from app.utils.notification_utils import build_id, build_object_url, extract_video_id
+from app.utils.notification_utils import (
+    build_id,
+    build_object_url,
+    extract_video_id,
+    object_key_from_event,
+)
 from app.websocket import publish_update
 
 from app.consumers.base import AppRebalanceListener
@@ -54,6 +60,20 @@ async def consume_messages(consumer: AIOKafkaConsumer) -> None:
                             video_id,
                             msg.offset,
                         )
+                        # The row is already gone (deleted before this upload
+                        # landed) — drop the object so viduploads keeps no
+                        # orphaned source videos.
+                        object_key = object_key_from_event(event_dict)
+                        if object_key:
+                            try:
+                                cleanup_video_obj(object_key, settings.minio_bucket)
+                            except Exception:
+                                logger.warning(
+                                    "Could not clean up orphan object %s/%s",
+                                    settings.minio_bucket,
+                                    object_key,
+                                    exc_info=True,
+                                )
                         await consumer.commit(
                             {TopicPartition(msg.topic, msg.partition): msg.offset + 1}
                         )

@@ -62,7 +62,11 @@ jest.mock('ws', () => {
 });
 
 const jwtMock = require('jsonwebtoken').default as { verify: jest.Mock };
-const redisMock = require('../../../src/config/redis').default as { get: jest.Mock };
+const redisMock = require('../../../src/config/redis').default as {
+  get: jest.Mock;
+  scan: jest.Mock;
+  del: jest.Mock;
+};
 const loggerMock = require('../../../src/middleware/logger').logger as { info: jest.Mock; warn: jest.Mock; error: jest.Mock };
 const WS = require('ws').WebSocket as jest.Mock;
 
@@ -367,8 +371,10 @@ describe('WebSocket Proxy', () => {
 
       const upstreamWs = WS.mock.instances[WS.mock.instances.length - 1];
       upstreamWs.emit('open');
-      clientWs.emit('message', Buffer.from('hello upstream'));
-      expect(upstreamWs.send).toHaveBeenCalled();
+      clientWs.emit('message', Buffer.from('hello upstream'), true);
+      expect(upstreamWs.send).toHaveBeenCalledWith(Buffer.from('hello upstream'), {
+        binary: true,
+      });
     });
 
     it('should forward upstream messages to client', async () => {
@@ -389,8 +395,10 @@ describe('WebSocket Proxy', () => {
 
       const upstreamWs = WS.mock.instances[WS.mock.instances.length - 1];
       upstreamWs.emit('open');
-      upstreamWs.emit('message', Buffer.from('hello client'));
-      expect(clientWs.send).toHaveBeenCalled();
+      upstreamWs.emit('message', Buffer.from('hello client'), false);
+      expect(clientWs.send).toHaveBeenCalledWith(Buffer.from('hello client'), {
+        binary: false,
+      });
     });
 
     it('should not send to upstream if upstream is not OPEN', async () => {
@@ -414,6 +422,117 @@ describe('WebSocket Proxy', () => {
       upstreamWs.emit('open');
       clientWs.emit('message', Buffer.from('should not send'));
       expect(upstreamWs.send).not.toHaveBeenCalled();
+    });
+
+    it('queues frames sent before the upstream opens and flushes them on open', async () => {
+      jwtMock.verify.mockReturnValue({ sessionId: 'sess-queue' } as any);
+      redisMock.get.mockResolvedValue(
+        JSON.stringify({ userId: 'u7', role: 'user', email: 'q@s.com' }),
+      );
+
+      const socket = makeSocket();
+      upgradeHandler(
+        makeReq('/ws/video/notification', { authorization: 'Bearer valid-token' }),
+        socket,
+        Buffer.alloc(0),
+      );
+      await new Promise((r) => setTimeout(r, 10));
+
+      const cb = mockUpgradeCb.mock.calls[0][0];
+      cb(clientWs);
+
+      const WS = require('ws').WebSocket;
+      const upstreamWs = WS.mock.instances[WS.mock.instances.length - 1];
+      upstreamWs.readyState = 0; // still CONNECTING: ws.send() would throw here
+
+      clientWs.emit('message', Buffer.from('early segment_report'), true);
+      expect(upstreamWs.send).not.toHaveBeenCalled();
+
+      upstreamWs.readyState = 1;
+      upstreamWs.emit('open');
+      expect(upstreamWs.send).toHaveBeenCalledWith(Buffer.from('early segment_report'), {
+        binary: true,
+      });
+    });
+  });
+
+  describe('cache invalidation on status frames', () => {
+    async function connect(): Promise<any> {
+      jwtMock.verify.mockReturnValue({ sessionId: 'sess-cache' } as any);
+      redisMock.get.mockResolvedValue(
+        JSON.stringify({ userId: 'u-cache', email: 'c@c.com' }),
+      );
+
+      const socket = makeSocket();
+      upgradeHandler(
+        makeReq('/ws/video/notification', { authorization: 'Bearer valid-token' }),
+        socket,
+        Buffer.alloc(0),
+      );
+      await new Promise((r) => setTimeout(r, 10));
+
+      const cb = mockUpgradeCb.mock.calls[0][0];
+      cb(clientWs);
+      const upstreamWs = WS.mock.instances[WS.mock.instances.length - 1];
+      upstreamWs.emit('open');
+      return upstreamWs;
+    }
+
+    it('invalidates cached responses BEFORE forwarding a status push', async () => {
+      redisMock.scan.mockImplementation(
+        () => new Promise((r) => setTimeout(() => r(['0', []]), 20)),
+      );
+      const upstreamWs = await connect();
+
+      upstreamWs.emit(
+        'message',
+        Buffer.from(JSON.stringify({ video_id: 'v-9', status: 'COMPLETED', user_id: 1 })),
+      );
+
+      await new Promise((r) => setTimeout(r, 5));
+      expect(redisMock.scan).toHaveBeenCalledWith(
+        '0',
+        'MATCH',
+        'cache:resp:*:/api/video/v-9*',
+        'COUNT',
+        100,
+      );
+      expect(clientWs.send).not.toHaveBeenCalled();
+
+      await new Promise((r) => setTimeout(r, 40));
+      expect(clientWs.send).toHaveBeenCalled();
+    });
+
+    it('does not touch Redis for ABR-typed frames', async () => {
+      const upstreamWs = await connect();
+
+      upstreamWs.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'abr_recommendation',
+            video_id: 'v-9',
+            seq: 4,
+            current_rendition: '480p',
+            recommended_rendition: '720p',
+            reason: 'headroom',
+          }),
+        ),
+      );
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(redisMock.scan).not.toHaveBeenCalled();
+      expect(clientWs.send).toHaveBeenCalled();
+    });
+
+    it('forwards malformed frames without touching Redis', async () => {
+      const upstreamWs = await connect();
+
+      upstreamWs.emit('message', Buffer.from('not-json'));
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(redisMock.scan).not.toHaveBeenCalled();
+      expect(clientWs.send).toHaveBeenCalled();
     });
   });
 

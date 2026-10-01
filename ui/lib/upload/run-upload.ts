@@ -6,6 +6,7 @@ export interface UploadProgress {
   phase: "preparing" | "uploading" | "finalizing" | "done";
   percent: number;
   message: string;
+  loaded?: number;
 }
 
 export type ProgressFn = (p: UploadProgress) => void;
@@ -25,31 +26,46 @@ async function uploadPresigned(
   file: File,
   upload: { url: string; fields: Record<string, string> },
   onProgress: ProgressFn,
+  signal?: AbortSignal,
 ): Promise<void> {
   const form = new FormData();
   for (const [key, value] of Object.entries(upload.fields)) {
     form.append(key, value);
   }
+  const contentType = file.type.startsWith("video/") ? file.type : "video/mp4";
+  form.append("Content-Type", contentType);
   form.append("file", file);
 
   await new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", upload.url, true);
+    const onAbort = () => xhr.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
         const percent = Math.round((e.loaded / e.total) * 100);
         onProgress({
           phase: "uploading",
           percent,
-          message: `Uploading… ${percent}%`,
+          message: "Uploading",
+          loaded: e.loaded,
         });
       }
     };
     xhr.onload = () => {
+      cleanup();
       if (xhr.status >= 200 && xhr.status < 300) resolve();
       else reject(new Error(`Storage upload failed (${xhr.status})`));
     };
-    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.onerror = () => {
+      cleanup();
+      reject(new Error("Network error during upload"));
+    };
+    xhr.onabort = () => {
+      cleanup();
+      reject(new DOMException("Upload cancelled", "AbortError"));
+    };
     xhr.send(form);
   });
 }
@@ -58,6 +74,7 @@ async function uploadMultipart(
   file: File,
   res: UploadResponse,
   onProgress: ProgressFn,
+  signal?: AbortSignal,
 ): Promise<UploadPartResult[]> {
   if (!isMultipartUpload(res.upload)) return [];
   const upload = res.upload;
@@ -72,6 +89,7 @@ async function uploadMultipart(
 
   async function worker() {
     while (index < partsList.length) {
+      if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError");
       const i = index++;
       const part = partsList[i];
       const start = i * partSize;
@@ -82,6 +100,7 @@ async function uploadMultipart(
         method: "PUT",
         body: blob,
         headers: { "Content-Type": file.type || "video/mp4" },
+        signal,
       });
       if (!putRes.ok) throw new Error(`Part ${part.part_number} upload failed (${putRes.status})`);
 
@@ -96,7 +115,8 @@ async function uploadMultipart(
       onProgress({
         phase: "uploading",
         percent,
-        message: `Uploading parts… ${percent}%`,
+        message: "Uploading",
+        loaded,
       });
     }
   }
@@ -106,11 +126,18 @@ async function uploadMultipart(
   return etags;
 }
 
-export async function runUpload(file: File, onProgress: ProgressFn): Promise<UploadResponse> {
+export async function runUpload(
+  file: File,
+  onProgress: ProgressFn,
+  opts?: {
+    signal?: AbortSignal;
+    onCreated?: (res: UploadResponse) => void;
+  },
+): Promise<UploadResponse> {
   const validation = validateVideoFile(file);
   if (validation) throw new Error(validation);
 
-  onProgress({ phase: "preparing", percent: 0, message: "Preparing upload…" });
+  onProgress({ phase: "preparing", percent: 0, message: "Preparing upload" });
 
   const res = await createUpload({
     filename: file.name,
@@ -119,15 +146,16 @@ export async function runUpload(file: File, onProgress: ProgressFn): Promise<Upl
   });
 
   trackVideoId(res.id);
+  opts?.onCreated?.(res);
 
   if (isMultipartUpload(res.upload)) {
-    const parts = await uploadMultipart(file, res, onProgress);
-    onProgress({ phase: "finalizing", percent: 99, message: "Finalizing multipart upload…" });
+    const parts = await uploadMultipart(file, res, onProgress, opts?.signal);
+    onProgress({ phase: "finalizing", percent: 99, message: "Finalizing multipart upload" });
     const { completeMultipart } = await import("@/lib/api/video");
     await completeMultipart(res.id, res.upload.upload_id, parts);
   } else {
-    await uploadPresigned(file, res.upload, onProgress);
-    onProgress({ phase: "finalizing", percent: 100, message: "Waiting for processing…" });
+    await uploadPresigned(file, res.upload, onProgress, opts?.signal);
+    onProgress({ phase: "finalizing", percent: 100, message: "Waiting for processing" });
   }
 
   onProgress({ phase: "done", percent: 100, message: "Upload complete" });

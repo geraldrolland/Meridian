@@ -125,6 +125,7 @@ def _make_video(status="QUEUED", user_id=1, num_of_retries=0):
     video.notif_reference_id = None
     video.video_url = None
     video.manifest_url = None
+    video.thumbnail_url = None
     video.size = None
     return video
 
@@ -179,18 +180,55 @@ class TestNotificationConsumer:
         consumer.commit.assert_awaited()
         consumer.stop.assert_awaited()
 
-    def test_video_not_found_commits(self):
-        event = _minio_event()
+    def test_video_not_found_commits_and_cleans_up_object(self):
+        event = _minio_event(key="videos/vid1/file.mp4")
         consumer = _FakeConsumer([_FakeMsg(json.dumps(event).encode())])
         session = _make_session()
         session.get.return_value = None
         with patch(
             "app.consumers.notification_consumer.async_session_factory",
             return_value=_AsyncSessionCM(session),
-        ):
+        ), patch(
+            "app.consumers.notification_consumer.cleanup_video_obj"
+        ) as mock_cleanup:
             asyncio.run(_run_notification(consumer))
         session.get.assert_awaited_once()
         session.commit.assert_not_awaited()
+        mock_cleanup.assert_called_once_with("videos/vid1/file.mp4", "viduploads")
+        consumer.commit.assert_awaited()
+
+    def test_video_not_found_survives_cleanup_failure(self):
+        event = _minio_event(key="videos/vid1/file.mp4")
+        consumer = _FakeConsumer([_FakeMsg(json.dumps(event).encode())])
+        session = _make_session()
+        session.get.return_value = None
+        with patch(
+            "app.consumers.notification_consumer.async_session_factory",
+            return_value=_AsyncSessionCM(session),
+        ), patch(
+            "app.consumers.notification_consumer.cleanup_video_obj",
+            side_effect=Exception("minio down"),
+        ) as mock_cleanup:
+            asyncio.run(_run_notification(consumer))
+        mock_cleanup.assert_called_once_with("videos/vid1/file.mp4", "viduploads")
+        consumer.commit.assert_awaited()
+        consumer.stop.assert_awaited()
+
+    def test_video_not_found_skips_cleanup_without_key(self):
+        event = _minio_event(key="other/file.mp4")
+        consumer = _FakeConsumer([_FakeMsg(json.dumps(event).encode())])
+        session = _make_session()
+        session.get.return_value = None
+        with patch(
+            "app.consumers.notification_consumer.async_session_factory",
+            return_value=_AsyncSessionCM(session),
+        ), patch(
+            "app.consumers.notification_consumer.cleanup_video_obj"
+        ) as mock_cleanup:
+            asyncio.run(_run_notification(consumer))
+        # Key outside videos/{id}/… never reaches the session lookup, so no cleanup.
+        session.get.assert_not_called()
+        mock_cleanup.assert_not_called()
         consumer.commit.assert_awaited()
 
     def test_happy_path_updates_video_and_publishes(self):
@@ -205,7 +243,9 @@ class TestNotificationConsumer:
             return_value=_AsyncSessionCM(session),
         ), patch(
             "app.consumers.notification_consumer.publish_update", new=AsyncMock()
-        ) as mock_publish:
+        ) as mock_publish, patch(
+            "app.consumers.notification_consumer.cleanup_video_obj"
+        ) as mock_cleanup:
             asyncio.run(_run_notification(consumer))
 
         assert video.status == "QUEUED"
@@ -214,6 +254,7 @@ class TestNotificationConsumer:
         assert video.notif_reference_id is not None
         session.commit.assert_awaited_once()
         mock_publish.assert_awaited_once()
+        mock_cleanup.assert_not_called()
         consumer.commit.assert_awaited()
         consumer.stop.assert_awaited()
 
@@ -423,6 +464,35 @@ class TestManifestGeneratingConsumer:
         consumer.commit.assert_awaited()
 
     def test_happy_path_sets_generating_manifest(self):
+        thumbnail_url = "http://minio:9000/vidthumbnails/vid1/thumb.jpg"
+        consumer = _FakeConsumer(
+            [_FakeMsg(json.dumps({
+                "video_id": "vid1",
+                "thumbnail_url": thumbnail_url,
+            }).encode())],
+            topic="manifest.generating",
+        )
+        session = _make_session()
+        video = _make_video(status="PROCESSING", user_id=5)
+        session.get.return_value = video
+
+        with patch(
+            "app.consumers.manifest_generating_consumer.async_session_factory",
+            return_value=_AsyncSessionCM(session),
+        ), patch(
+            "app.consumers.manifest_generating_consumer.publish_update", new=AsyncMock()
+        ) as mock_publish:
+            asyncio.run(_run_generating(consumer))
+
+        assert video.status == "GENERATING_MANIFEST"
+        assert video.thumbnail_url == thumbnail_url
+        session.commit.assert_awaited_once()
+        mock_publish.assert_awaited_once()
+        assert mock_publish.await_args.kwargs["thumbnail_url"] == thumbnail_url
+        consumer.commit.assert_awaited()
+        consumer.stop.assert_awaited()
+
+    def test_missing_thumbnail_keeps_existing_value(self):
         consumer = _FakeConsumer(
             [_FakeMsg(json.dumps({"video_id": "vid1"}).encode())],
             topic="manifest.generating",
@@ -440,10 +510,10 @@ class TestManifestGeneratingConsumer:
             asyncio.run(_run_generating(consumer))
 
         assert video.status == "GENERATING_MANIFEST"
+        assert video.thumbnail_url is None
         session.commit.assert_awaited_once()
         mock_publish.assert_awaited_once()
-        consumer.commit.assert_awaited()
-        consumer.stop.assert_awaited()
+        assert mock_publish.await_args.kwargs["thumbnail_url"] is None
 
     def test_video_not_found_commits_without_update(self):
         consumer = _FakeConsumer(
@@ -542,6 +612,7 @@ class TestManifestCompletedConsumer:
         assert video.manifest_url == manifest_url
         session.commit.assert_awaited_once()
         mock_publish.assert_awaited_once()
+        assert mock_publish.await_args.kwargs["manifest_url"] == manifest_url
         consumer.commit.assert_awaited()
         consumer.stop.assert_awaited()
 
@@ -560,12 +631,39 @@ class TestManifestCompletedConsumer:
             return_value=_AsyncSessionCM(session),
         ), patch(
             "app.consumers.manifest_completed_consumer.publish_update", new=AsyncMock()
-        ):
+        ) as mock_publish:
             asyncio.run(_run_completed(consumer))
 
         assert video.status == "COMPLETED"
         assert video.manifest_url is None
         session.commit.assert_awaited_once()
+        mock_publish.assert_awaited_once()
+        assert mock_publish.await_args.kwargs["manifest_url"] is None
+
+    def test_pushes_db_manifest_url_when_event_omits_it(self):
+        existing = "http://minio:9000/manifest/vid1/existing.mpd"
+        consumer = _FakeConsumer(
+            [_FakeMsg(json.dumps({"video_id": "vid1"}).encode())],
+            topic="manifest.completed",
+        )
+        session = _make_session()
+        video = _make_video(status="GENERATING_MANIFEST", user_id=9)
+        video.manifest_url = existing
+        session.get.return_value = video
+
+        with patch(
+            "app.consumers.manifest_completed_consumer.async_session_factory",
+            return_value=_AsyncSessionCM(session),
+        ), patch(
+            "app.consumers.manifest_completed_consumer.publish_update", new=AsyncMock()
+        ) as mock_publish:
+            asyncio.run(_run_completed(consumer))
+
+        assert video.status == "COMPLETED"
+        assert video.manifest_url == existing
+        session.commit.assert_awaited_once()
+        mock_publish.assert_awaited_once()
+        assert mock_publish.await_args.kwargs["manifest_url"] == existing
 
     def test_video_not_found_commits_without_update(self):
         consumer = _FakeConsumer(

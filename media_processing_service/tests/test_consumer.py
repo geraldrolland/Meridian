@@ -90,11 +90,9 @@ class TestConsumeMessages:
 
     def test_null_value_commits_and_skips(self):
         consumer = _FakeConsumer([_FakeMsg(None)])
-        with patch("app.consumer.async_session_factory") as mock_factory, \
-             patch("app.consumer.acquire_lock") as mock_acquire:
+        with patch("app.consumer.async_session_factory") as mock_factory:
             _run(consumer)
         mock_factory.assert_not_called()
-        mock_acquire.assert_not_called()
         consumer.commit.assert_awaited()
         consumer.stop.assert_awaited()
 
@@ -102,67 +100,31 @@ class TestConsumeMessages:
         msg = _FakeMsg(json.dumps({"event_id": "evt1"}).encode())
         consumer = _FakeConsumer([msg])
         with patch("app.consumer.async_session_factory") as mock_factory, \
-             patch("app.consumer.acquire_lock") as mock_acquire, \
              patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
             _run(consumer)
         mock_factory.assert_not_called()
-        mock_acquire.assert_not_called()
         mock_sleep.assert_awaited_with(1)
         consumer.commit.assert_not_awaited()
         consumer.stop.assert_awaited()
 
-    def test_happy_path_acquires_locks_commits_job_and_offset(self):
+    def test_happy_path_persists_job_and_outbox_and_offset(self):
         msg = _FakeMsg(json.dumps(_payload()).encode())
         consumer = _FakeConsumer([msg])
         session = _make_session()
-        processing_lock = MagicMock()
-        committing_lock = MagicMock()
 
-        with patch("app.consumer.async_session_factory", return_value=_AsyncSessionCM(session)), \
-             patch("app.consumer.acquire_lock", side_effect=[processing_lock, committing_lock]) as mock_acquire, \
-             patch("app.consumer.release_lock") as mock_release:
+        with patch("app.consumer.async_session_factory", return_value=_AsyncSessionCM(session)):
             _run(consumer)
 
-        assert mock_acquire.call_count == 2
-        assert session.add.call_count == 1
-        job = session.add.call_args[0][0]
-        assert job.id == "job:evt1"
-        assert job.video_id == "vid1"
-        assert job.object_url == "http://minio:9000/viduploads/videos/vid1/file.mp4"
+        assert session.add.call_count == 2
+        added_outbox = session.add.call_args_list[0][0][0]
+        added_job = session.add.call_args_list[1][0][0]
+        assert added_outbox.topic == "job.processing"
+        assert added_outbox.payload == {"video_id": "vid1"}
+        assert added_job.id == "job:evt1"
+        assert added_job.video_id == "vid1"
+        assert added_job.object_url == "http://minio:9000/viduploads/videos/vid1/file.mp4"
         session.commit.assert_awaited_once()
         consumer.commit.assert_awaited()
-        consumer.stop.assert_awaited()
-        assert mock_release.call_count == 2
-        mock_release.assert_any_call(committing_lock)
-        mock_release.assert_any_call(processing_lock)
-
-    def test_processing_lock_none_skips_without_commit(self):
-        msg = _FakeMsg(json.dumps(_payload()).encode())
-        consumer = _FakeConsumer([msg])
-        with patch("app.consumer.async_session_factory") as mock_factory, \
-             patch("app.consumer.acquire_lock", return_value=None) as mock_acquire, \
-             patch("app.consumer.release_lock") as mock_release:
-            _run(consumer)
-
-        assert mock_acquire.call_count == 1
-        mock_factory.assert_not_called()
-        mock_release.assert_not_called()
-        consumer.commit.assert_not_awaited()
-        consumer.stop.assert_awaited()
-
-    def test_committing_lock_none_releases_processing_and_skips_commit(self):
-        msg = _FakeMsg(json.dumps(_payload()).encode())
-        consumer = _FakeConsumer([msg])
-        processing_lock = MagicMock()
-
-        with patch("app.consumer.async_session_factory") as mock_factory, \
-             patch("app.consumer.acquire_lock", side_effect=[processing_lock, None]), \
-             patch("app.consumer.release_lock") as mock_release:
-            _run(consumer)
-
-        mock_factory.assert_not_called()
-        consumer.commit.assert_not_awaited()
-        mock_release.assert_called_once_with(processing_lock)
         consumer.stop.assert_awaited()
 
     def test_json_decode_error_commits_offset(self):
@@ -174,46 +136,27 @@ class TestConsumeMessages:
         consumer.commit.assert_awaited()
         consumer.stop.assert_awaited()
 
-    def test_integrity_error_commits_offset_and_releases_locks(self):
+    def test_integrity_error_commits_offset(self):
         msg = _FakeMsg(json.dumps(_payload()).encode())
         consumer = _FakeConsumer([msg])
         session = _make_session()
         session.commit = AsyncMock(
             side_effect=IntegrityError("INSERT", {}, Exception("duplicate"))
         )
-        processing_lock = MagicMock()
-        committing_lock = MagicMock()
 
-        with patch("app.consumer.async_session_factory", return_value=_AsyncSessionCM(session)), \
-             patch("app.consumer.acquire_lock", side_effect=[processing_lock, committing_lock]), \
-             patch("app.consumer.release_lock") as mock_release:
+        with patch("app.consumer.async_session_factory", return_value=_AsyncSessionCM(session)):
             _run(consumer)
 
         consumer.commit.assert_awaited()
         consumer.stop.assert_awaited()
-        assert mock_release.call_count == 2
-
-    def test_json_error_commits_and_releases_no_locks(self):
-        msg = _FakeMsg(b"{invalid json")
-        consumer = _FakeConsumer([msg])
-        with patch("app.consumer.acquire_lock") as mock_acquire, \
-             patch("app.consumer.release_lock") as mock_release:
-            _run(consumer)
-        mock_acquire.assert_not_called()
-        mock_release.assert_not_called()
-        consumer.commit.assert_awaited()
 
     def test_generic_error_sleeps_without_kafka_commit(self):
         msg = _FakeMsg(json.dumps(_payload()).encode())
         consumer = _FakeConsumer([msg])
         session = _make_session()
         session.commit = AsyncMock(side_effect=Exception("db down"))
-        processing_lock = MagicMock()
-        committing_lock = MagicMock()
 
         with patch("app.consumer.async_session_factory", return_value=_AsyncSessionCM(session)), \
-             patch("app.consumer.acquire_lock", side_effect=[processing_lock, committing_lock]), \
-             patch("app.consumer.release_lock"), \
              patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
             _run(consumer)
 
@@ -226,3 +169,94 @@ class TestConsumeMessages:
         _run(consumer)
         consumer.stop.assert_awaited_once()
         consumer.commit.assert_not_awaited()
+
+
+class TestVideoDeletedDispatch:
+    """video.deleted topic: cleanup only — no Job/Outbox rows."""
+
+    def test_cleans_up_and_commits_offset(self):
+        msg = _FakeMsg(
+            json.dumps({"video_id": "vid1"}).encode(), topic="video.deleted"
+        )
+        consumer = _FakeConsumer([msg])
+        with patch("app.consumer.async_session_factory") as mock_factory, \
+             patch("app.consumer._handle_video_deleted") as mock_handle:
+            _run(consumer)
+
+        mock_handle.assert_called_once_with("vid1")
+        mock_factory.assert_not_called()
+        consumer.commit.assert_awaited()
+        consumer.stop.assert_awaited()
+
+    def test_missing_video_id_skips_handler_but_commits(self):
+        msg = _FakeMsg(
+            json.dumps({"video_id": None}).encode(), topic="video.deleted"
+        )
+        consumer = _FakeConsumer([msg])
+        with patch("app.consumer._handle_video_deleted") as mock_handle:
+            _run(consumer)
+
+        mock_handle.assert_not_called()
+        consumer.commit.assert_awaited()
+        consumer.stop.assert_awaited()
+
+    def test_handler_integrity_error_still_commits_offset(self):
+        msg = _FakeMsg(
+            json.dumps({"video_id": "vid1"}).encode(), topic="video.deleted"
+        )
+        consumer = _FakeConsumer([msg])
+        with patch(
+            "app.consumer._handle_video_deleted",
+            side_effect=IntegrityError("DELETE", {}, Exception("gone")),
+        ):
+            _run(consumer)
+
+        consumer.commit.assert_awaited()
+        consumer.stop.assert_awaited()
+
+    def test_handler_error_sleeps_without_kafka_commit(self):
+        msg = _FakeMsg(
+            json.dumps({"video_id": "vid1"}).encode(), topic="video.deleted"
+        )
+        consumer = _FakeConsumer([msg])
+        with patch(
+            "app.consumer._handle_video_deleted",
+            side_effect=Exception("minio down"),
+        ), patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            _run(consumer)
+
+        mock_sleep.assert_awaited_with(1)
+        consumer.commit.assert_not_awaited()
+        consumer.stop.assert_awaited()
+
+
+class TestHandleVideoDeleted:
+    """_handle_video_deleted: query jobs by video, run cleanup_jobs."""
+
+    def test_queries_jobs_and_calls_cleanup(self):
+        from app.consumer import _handle_video_deleted
+
+        jobs = [MagicMock(), MagicMock()]
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = jobs
+
+        with patch("app.consumer.get_sync_session", return_value=session), \
+             patch("app.consumer.cleanup_jobs") as mock_cleanup:
+            _handle_video_deleted("vid1")
+
+        session.query.return_value.filter.return_value.all.assert_called_once()
+        mock_cleanup.assert_called_once_with(jobs, session)
+        session.close.assert_called_once()
+
+    def test_no_jobs_skips_cleanup(self):
+        from app.consumer import _handle_video_deleted
+
+        session = MagicMock()
+        session.query.return_value.filter.return_value.all.return_value = []
+
+        with patch("app.consumer.get_sync_session", return_value=session), \
+             patch("app.consumer.cleanup_jobs") as mock_cleanup:
+            _handle_video_deleted("vid1")
+
+        mock_cleanup.assert_not_called()
+        session.close.assert_called_once()
