@@ -563,20 +563,26 @@ cd Meridian
 docker compose up --build -d
 ```
 
-#### Step 3: Start the UI (optional)
+#### Step 3: Open the UI
+
+The UI runs as a container (`meridian-ui`, port 3000) and starts automatically with Step 2. Open [http://localhost:3000](http://localhost:3000).
+
+To run it with hot reload during development instead:
 
 ```bash
+docker compose stop ui
 cd ui
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The gateway allows this origin with credentials (`CORS_ORIGIN`, `CORS_CREDENTIALS` in `docker-compose.yml`). See [`ui/README.md`](ui/README.md).
+The gateway allows this origin with credentials (`CORS_ORIGIN`, `CORS_CREDENTIALS` in `docker-compose.yml`). See [`ui/README.md`](ui/README.md).
 
-This command builds all service images and starts **18 containers**:
+The stack builds all service images and starts **20 containers**:
 
 | Container | Service | Purpose |
 |-----------|---------|---------|
+| meridian-ui | UI (Next.js) | Web frontend (port 3000) |
 | meridian-api-gateway | API Gateway | Entry point, auth, rate limiting, WebSocket proxy |
 | meridian-auth-service | Auth Service | User registration, login, JWT |
 | meridian-video-service | Video Service | Video upload, processing lifecycle, WebSocket |
@@ -599,7 +605,7 @@ This command builds all service images and starts **18 containers**:
 | meridian-minio-init | MinIO Init | Creates viduploads + manifest buckets + notification config |
 | meridian-rabbitmq | RabbitMQ | Celery task broker |
 
-#### Step 3: Verify All Services Are Running
+#### Step 4: Verify All Services Are Running
 
 ```bash
 # Check container status (all should show "Up" or "running")
@@ -612,7 +618,7 @@ docker compose logs video-service | grep -i "ready\|listening"
 docker compose logs media-processing-service | grep -i "ready\|listening"
 ```
 
-#### Step 4: Test the API Gateway
+#### Step 5: Test the API Gateway
 
 ```bash
 # Health check
@@ -621,7 +627,7 @@ curl http://localhost:3001/health
 # Should return: {"status":"ok"}
 ```
 
-#### Step 5: Run the End-to-End Test
+#### Step 6: Run the End-to-End Test
 
 ```bash
 # Install Python dependencies (if not already installed)
@@ -633,7 +639,7 @@ python e2e_test.py
 
 The E2E test validates the complete pipeline: register, login, token refresh, profile, video upload, MinIO notification, video status, outbox event, and logout.
 
-#### Step 6: View Logs
+#### Step 7: View Logs
 
 ```bash
 # Follow all logs
@@ -651,14 +657,14 @@ docker compose logs -f media-processing-celery-worker
 docker compose logs --tail 100 api-gateway
 ```
 
-#### Step 7: Access Service Consoles
+#### Step 8: Access Service Consoles
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 | RabbitMQ Management | http://localhost:15672 | guest / guest |
 
-#### Step 8: Stop Services
+#### Step 9: Stop Services
 
 ```bash
 # Stop all services (preserves volumes)
@@ -675,6 +681,7 @@ docker compose down --rmi all
 
 | Service | URL |
 |---------|-----|
+| UI (Next.js) | http://localhost:3000 |
 | API Gateway | http://localhost:3001 |
 | API Gateway Health | http://localhost:3001/health |
 | Auth Service | http://localhost:4000 |
@@ -804,20 +811,21 @@ python -m pytest tests/ -v
 | Module | Tests |
 |--------|-------|
 | Middleware (proxy signature + session) | 7 tests |
-| MinIO client (presigned POST) | 2 tests |
+| ABR policy | 17 tests |
+| Kafka consumers | 44 tests |
+| MinIO client (presigned POST, multipart, cleanup) | 5 tests |
 | Multipart upload functions | 4 tests |
+| Notification utils (URL/key helpers) | 9 tests |
+| Outbox model | 3 tests |
 | Process outbox + queued videos tasks | 10 tests |
-| Ready endpoint | multi-dependency readiness |
-| Routes (upload, get, retry) | 16 tests |
-| Upload endpoint | 8 tests |
-| Video/Upload models | includes `manifest_url` |
-| Lock system | 6 tests |
-| Producer | 4 tests |
-| Consumers (incl. `manifest.completed`) | full consumer suite |
-| WebSocket + proxy signature | 17 tests |
-| **Total** | **128 passed** |
+| Ready endpoint | 7 tests |
+| Routes (upload, get, retry, delete) | 28 tests |
+| Upload endpoint | 15 tests |
+| Video/Upload models | 26 tests |
+| WebSocket + proxy signature | 20 tests |
+| **Total** | **195 passed** |
 
-Other suites (latest local runs): API Gateway **74 passed** (2 skipped), Auth **25 passed**, Media Processing **98 passed**, Manifest **86 passed**.
+Other suites (latest local runs): API Gateway **116 passed** (2 skipped), Auth **25 passed**, Media Processing **123 passed**, Manifest **121 passed**.
 
 ### Load and Performance Testing
 
@@ -873,8 +881,9 @@ MERIDIAN/
 │   │   │   └── redis.ts              # Redis client (ioredis)
 │   │   ├── handlers/                 # Route handlers
 │   │   │   └── refreshToken.ts       # Token refresh endpoint
-│   │   ├── middleware/               # Auth, CORS, logger, error handler, rate limiting
+│   │   ├── middleware/               # Auth, cache, CORS, logger, error handler, rate limiting
 │   │   │   ├── auth.ts               # JWT authentication middleware
+│   │   │   ├── cache.ts              # Redis response cache + video invalidation
 │   │   │   ├── cors.ts               # CORS configuration
 │   │   │   ├── errorHandler.ts       # Global error handler
 │   │   │   ├── logger.ts             # Winston logger + request logging
@@ -895,9 +904,9 @@ MERIDIAN/
 │
 ├── ui/                               # Next.js frontend (Port 3000)
 │   ├── app/                          # Landing, auth, dashboard, upload, video player
-│   ├── components/                   # Brand, player, video, shadcn-style UI
+│   ├── components/                   # Brand, player, video, demo tour, shadcn-style UI
 │   ├── lib/                          # API client, upload, WebSocket, MinIO URL rewrite
-│   ├── public/demo/                  # Product demo video
+│   ├── Dockerfile                    # Multi-stage standalone production image
 │   └── README.md
 │
 ├── auth_service/                     # Express TypeScript Auth Service (Port 4000)
